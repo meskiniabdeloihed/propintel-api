@@ -17,6 +17,7 @@ from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 import os
+import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -536,22 +537,20 @@ def estimate():
         if nom and email:
             pdf_b64 = generer_pdf(estimation, nom, email, tel)
 
-        # Envoi email si PDF généré
-        email_sent = False
+        # Envoi email en arrière-plan (non-bloquant)
         if pdf_b64 and email:
-            email_sent = send_pdf_by_email(
-                to_email=email,
-                pdf_b64=pdf_b64,
-                quartier=estimation['quartier'],
-                valeur_mid=estimation['valeur_mid'],
-                nom_client=nom or "Client"
+            thread = threading.Thread(
+                target=send_pdf_by_email,
+                args=(email, pdf_b64, estimation['quartier'], estimation['valeur_mid'], nom or "Client")
             )
+            thread.daemon = True
+            thread.start()
 
         return jsonify({
             "success": True,
             "estimation": estimation,
             "pdf_base64": pdf_b64,
-            "email_sent": email_sent,
+            "email_sent": "pending" if (pdf_b64 and email) else False,
         })
 
     except Exception as e:
