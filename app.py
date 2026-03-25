@@ -10,6 +10,13 @@ import io
 import base64
 import datetime
 import logging
+import smtplib
+import ssl
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
+import os
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -131,10 +138,8 @@ REFERENTIEL = {
 
 # ============================================================
 # COEFFICIENTS D'AJUSTEMENT TERRAIN
-# Source : observations Abdeloihed Meskini, Agent Élite Yakeey
 # ============================================================
 
-# État général du bien
 COEFF_ETAT = {
     "neuf":       1.15,
     "excellent":  1.10,
@@ -143,16 +148,14 @@ COEFF_ETAT = {
     "arenoveer":  0.75,
 }
 
-# Étage (appartements uniquement)
 COEFF_ETAGE = {
-    0:  0.95,  # RDC
-    1:  1.00,  # 1er
-    2:  1.02,  # 2ème
-    3:  1.05,  # 3ème
-    4:  1.07,  # 4ème+
+    0:  0.95,
+    1:  1.00,
+    2:  1.02,
+    3:  1.05,
+    4:  1.07,
 }
 
-# Équipements (bonus cumulatifs)
 BONUS_EQUIPEMENTS = {
     "parking":   0.04,
     "ascenseur": 0.03,
@@ -162,7 +165,6 @@ BONUS_EQUIPEMENTS = {
     "vue":       0.05,
 }
 
-# Coefficient surface (décote pour grande surface, surcote pour petite)
 def coeff_surface(surface, type_bien):
     if type_bien == "appartement":
         if surface < 60:    return 1.05
@@ -170,7 +172,7 @@ def coeff_surface(surface, type_bien):
         if surface < 150:   return 0.97
         if surface < 200:   return 0.94
         return 0.90
-    else:  # villa
+    else:
         if surface < 200:   return 1.05
         if surface < 350:   return 1.00
         if surface < 500:   return 0.96
@@ -184,7 +186,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
     if equipements is None:
         equipements = []
 
-    # Prix m² de base depuis le référentiel
     ref = REFERENTIEL.get(quartier)
     if not ref:
         return None, f"Quartier '{quartier}' non trouvé dans le référentiel"
@@ -193,29 +194,22 @@ def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
     prix_m2_base = ref.get(cle_type)
 
     if not prix_m2_base:
-        # Fallback : utiliser l'autre type si disponible
         autre = ref.get("villa" if cle_type == "appt" else "appt")
         if autre:
             prix_m2_base = autre * 0.90
         else:
             return None, f"Aucun prix disponible pour ce type de bien dans ce quartier"
 
-    # Application des coefficients
     c_etat = COEFF_ETAT.get(etat, 1.0)
     c_etage = COEFF_ETAGE.get(min(etage, 4), 1.0) if type_bien == "appartement" else 1.0
     c_surface = coeff_surface(surface, type_bien)
 
-    # Bonus équipements
     bonus = sum(BONUS_EQUIPEMENTS.get(eq, 0) for eq in equipements)
     c_equipements = 1 + bonus
 
-    # Prix m² ajusté
     prix_m2_ajuste = prix_m2_base * c_etat * c_etage * c_surface * c_equipements
 
-    # Valeur centrale
     valeur_centrale = prix_m2_ajuste * surface
-
-    # Fourchette ±10%
     valeur_min = round(valeur_centrale * 0.90 / 1000) * 1000
     valeur_max = round(valeur_centrale * 1.10 / 1000) * 1000
     valeur_mid = round(valeur_centrale / 1000) * 1000
@@ -296,7 +290,6 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
     content.append(header_table)
     content.append(HRFlowable(width="100%", thickness=1, color=or_color, spaceAfter=16))
 
-    # TITRE
     content.append(Paragraph("Estimation Immobilière", style_titre))
     content.append(Paragraph(
         f"Intelligence Immobilière · Marrakech · Modèle calibré sur données réelles 2024–2026",
@@ -416,6 +409,70 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
     return base64.b64encode(buffer.read()).decode('utf-8')
 
 # ============================================================
+# ENVOI EMAIL SMTP
+# ============================================================
+
+def send_pdf_by_email(to_email, pdf_b64, quartier, valeur_mid, nom_client):
+    """Envoie le rapport PDF par email via SMTP Hostinger."""
+    try:
+        smtp_host = os.environ.get('SMTP_HOST', 'smtp.hostinger.com')
+        smtp_port = int(os.environ.get('SMTP_PORT', 465))
+        smtp_user = os.environ.get('SMTP_USER', 'contact@propintel.ma')
+        smtp_password = os.environ.get('SMTP_PASSWORD', '')
+
+        msg = MIMEMultipart()
+        msg['From'] = f'PropIntel <{smtp_user}>'
+        msg['To'] = to_email
+        msg['Subject'] = f'Votre estimation immobilière — {quartier}'
+
+        body = f"""
+        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
+            <div style="background:#0d1117;padding:24px;text-align:center;">
+                <h1 style="color:#c9a84c;margin:0;font-size:24px;">PropIntel</h1>
+                <p style="color:#aaa;margin:4px 0 0;font-size:13px;">Intelligence Immobilière · Marrakech</p>
+            </div>
+            <div style="padding:32px 24px;color:#333;">
+                <p>Bonjour {nom_client},</p>
+                <p>Veuillez trouver ci-joint votre rapport d'estimation immobilière pour le quartier <strong>{quartier}</strong>.</p>
+                <div style="background:#f5f5f5;border-left:4px solid #c9a84c;padding:16px;margin:24px 0;">
+                    <p style="margin:0;font-size:18px;">Valeur estimée : <strong>{valeur_mid:,} MAD</strong></p>
+                </div>
+                <p>Pour toute question ou pour un accompagnement personnalisé, répondez directement à cet email.</p>
+                <p style="margin-top:32px;">Cordialement,<br>
+                <strong>Abdeloihed Meskini</strong><br>
+                Agent Élite Yakeey · PropIntel</p>
+            </div>
+            <div style="background:#f5f5f5;padding:16px;text-align:center;font-size:12px;color:#888;">
+                <a href="https://propintel.ma" style="color:#c9a84c;text-decoration:none;">propintel.ma</a>
+                &nbsp;·&nbsp;
+                <a href="mailto:contact@propintel.ma" style="color:#c9a84c;text-decoration:none;">contact@propintel.ma</a>
+            </div>
+        </div>
+        """
+        msg.attach(MIMEText(body, 'html'))
+
+        # Pièce jointe PDF
+        pdf_bytes = base64.b64decode(pdf_b64)
+        filename = f'estimation-propintel-{quartier.lower().replace(" ", "-")}.pdf'
+        part = MIMEBase('application', 'octet-stream')
+        part.set_payload(pdf_bytes)
+        encoders.encode_base64(part)
+        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
+        msg.attach(part)
+
+        context = ssl.create_default_context()
+        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
+            server.login(smtp_user, smtp_password)
+            server.sendmail(smtp_user, to_email, msg.as_string())
+
+        logger.info(f"Email envoyé avec succès à {to_email}")
+        return True
+
+    except Exception as e:
+        logger.error(f"Erreur envoi email à {to_email}: {e}")
+        return False
+
+# ============================================================
 # ENDPOINTS API
 # ============================================================
 
@@ -423,7 +480,7 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
 def health():
     return jsonify({
         "status": "ok",
-        "version": "1.0.0",
+        "version": "1.1.0",
         "quartiers": len(REFERENTIEL),
         "date": datetime.datetime.now().isoformat()
     })
@@ -479,10 +536,22 @@ def estimate():
         if nom and email:
             pdf_b64 = generer_pdf(estimation, nom, email, tel)
 
+        # Envoi email si PDF généré
+        email_sent = False
+        if pdf_b64 and email:
+            email_sent = send_pdf_by_email(
+                to_email=email,
+                pdf_b64=pdf_b64,
+                quartier=estimation['quartier'],
+                valeur_mid=estimation['valeur_mid'],
+                nom_client=nom or "Client"
+            )
+
         return jsonify({
             "success": True,
             "estimation": estimation,
             "pdf_base64": pdf_b64,
+            "email_sent": email_sent,
         })
 
     except Exception as e:
