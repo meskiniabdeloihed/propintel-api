@@ -10,12 +10,7 @@ import io
 import base64
 import datetime
 import logging
-import smtplib
-import ssl
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
+import requests
 import os
 import threading
 
@@ -25,11 +20,6 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# ============================================================
-# RÉFÉRENTIEL YAKEEY — MARRAKECH (mars 2026)
-# Source : yakeey.com/fr-ma/referentiel-de-prix-immobilier/marrakech
-# Ajusté par observations terrain Abdeloihed Meskini
-# ============================================================
 REFERENTIEL = {
     "Abouab Gueliz - Mabrouka":     {"appt": 6684,  "villa": 7764},
     "Abouab Mhamid":                {"appt": 5467,  "villa": 3527},
@@ -137,10 +127,6 @@ REFERENTIEL = {
     "Zohor Targa - Zephyr":         {"appt": 6330,  "villa": 6507},
 }
 
-# ============================================================
-# COEFFICIENTS D'AJUSTEMENT TERRAIN
-# ============================================================
-
 COEFF_ETAT = {
     "neuf":       1.15,
     "excellent":  1.10,
@@ -179,10 +165,6 @@ def coeff_surface(surface, type_bien):
         if surface < 500:   return 0.96
         return 0.92
 
-# ============================================================
-# MOTEUR D'ESTIMATION
-# ============================================================
-
 def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
     if equipements is None:
         equipements = []
@@ -204,12 +186,9 @@ def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
     c_etat = COEFF_ETAT.get(etat, 1.0)
     c_etage = COEFF_ETAGE.get(min(etage, 4), 1.0) if type_bien == "appartement" else 1.0
     c_surface = coeff_surface(surface, type_bien)
-
     bonus = sum(BONUS_EQUIPEMENTS.get(eq, 0) for eq in equipements)
     c_equipements = 1 + bonus
-
     prix_m2_ajuste = prix_m2_base * c_etat * c_etage * c_surface * c_equipements
-
     valeur_centrale = prix_m2_ajuste * surface
     valeur_min = round(valeur_centrale * 0.90 / 1000) * 1000
     valeur_max = round(valeur_centrale * 1.10 / 1000) * 1000
@@ -233,20 +212,10 @@ def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
         }
     }, None
 
-# ============================================================
-# GÉNÉRATION PDF
-# ============================================================
-
 def generer_pdf(estimation, nom_client, email_client, tel_client):
     buffer = io.BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=20*mm,
-        leftMargin=20*mm,
-        topMargin=20*mm,
-        bottomMargin=20*mm,
-    )
+    doc = SimpleDocTemplate(buffer, pagesize=A4,
+        rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
 
     styles = getSampleStyleSheet()
     or_color = colors.HexColor('#c9a84c')
@@ -254,28 +223,21 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
     muted_color = colors.HexColor('#6b7280')
 
     style_titre = ParagraphStyle('titre', parent=styles['Normal'],
-        fontSize=22, fontName='Helvetica-Bold', textColor=dark_color,
-        spaceAfter=4, alignment=TA_LEFT)
+        fontSize=22, fontName='Helvetica-Bold', textColor=dark_color, spaceAfter=4, alignment=TA_LEFT)
     style_sous_titre = ParagraphStyle('sous_titre', parent=styles['Normal'],
-        fontSize=11, fontName='Helvetica', textColor=muted_color,
-        spaceAfter=16, alignment=TA_LEFT)
+        fontSize=11, fontName='Helvetica', textColor=muted_color, spaceAfter=16, alignment=TA_LEFT)
     style_section = ParagraphStyle('section', parent=styles['Normal'],
-        fontSize=9, fontName='Helvetica-Bold', textColor=or_color,
-        spaceBefore=14, spaceAfter=6, alignment=TA_LEFT)
+        fontSize=9, fontName='Helvetica-Bold', textColor=or_color, spaceBefore=14, spaceAfter=6, alignment=TA_LEFT)
     style_body = ParagraphStyle('body', parent=styles['Normal'],
-        fontSize=10, fontName='Helvetica', textColor=dark_color,
-        spaceAfter=4, leading=16)
+        fontSize=10, fontName='Helvetica', textColor=dark_color, spaceAfter=4, leading=16)
     style_disclaimer = ParagraphStyle('disclaimer', parent=styles['Normal'],
-        fontSize=8, fontName='Helvetica', textColor=muted_color,
-        spaceAfter=4, leading=12)
+        fontSize=8, fontName='Helvetica', textColor=muted_color, spaceAfter=4, leading=12)
     style_centre = ParagraphStyle('centre', parent=styles['Normal'],
-        fontSize=10, fontName='Helvetica', textColor=dark_color,
-        alignment=TA_CENTER)
+        fontSize=10, fontName='Helvetica', textColor=dark_color, alignment=TA_CENTER)
 
     content = []
     date_str = datetime.datetime.now().strftime("%d/%m/%Y")
 
-    # EN-TÊTE
     header_data = [[
         Paragraph("<b>PropIntel</b>", ParagraphStyle('logo', parent=styles['Normal'],
             fontSize=18, fontName='Helvetica-Bold', textColor=or_color)),
@@ -284,125 +246,82 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
             fontSize=11, fontName='Helvetica', textColor=dark_color, alignment=TA_RIGHT))
     ]]
     header_table = Table(header_data, colWidths=[85*mm, 85*mm])
-    header_table.setStyle(TableStyle([
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 8),
-    ]))
+    header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BOTTOMPADDING', (0,0), (-1,-1), 8)]))
     content.append(header_table)
     content.append(HRFlowable(width="100%", thickness=1, color=or_color, spaceAfter=16))
-
     content.append(Paragraph("Estimation Immobilière", style_titre))
-    content.append(Paragraph(
-        f"Intelligence Immobilière · Marrakech · Modèle calibré sur données réelles 2024–2026",
-        style_sous_titre))
+    content.append(Paragraph("Intelligence Immobilière · Marrakech · Modèle calibré sur données réelles 2024–2026", style_sous_titre))
 
-    # CLIENT
     content.append(Paragraph("INFORMATIONS CLIENT", style_section))
-    client_data = [
-        ["Nom", nom_client],
-        ["Email", email_client],
-        ["Téléphone", tel_client],
-    ]
-    client_table = Table(client_data, colWidths=[40*mm, 130*mm])
+    client_table = Table([["Nom", nom_client], ["Email", email_client], ["Téléphone", tel_client]], colWidths=[40*mm, 130*mm])
     client_table.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,-1), 9),
-        ('TEXTCOLOR', (0,0), (0,-1), colors.HexColor('#374151')),
-        ('TEXTCOLOR', (1,0), (1,-1), dark_color),
+        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,-1), 9),
+        ('TEXTCOLOR', (0,0), (0,-1), colors.HexColor('#374151')), ('TEXTCOLOR', (1,0), (1,-1), dark_color),
         ('ROWBACKGROUNDS', (0,0), (-1,-1), [colors.HexColor('#f9fafb'), colors.white]),
-        ('TOPPADDING', (0,0), (-1,-1), 6),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ('LEFTPADDING', (0,0), (-1,-1), 8),
+        ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6), ('LEFTPADDING', (0,0), (-1,-1), 8),
     ]))
     content.append(client_table)
 
-    # BIEN
     content.append(Paragraph("BIEN ÉVALUÉ", style_section))
     type_label = "Appartement" if estimation['type_bien'] == 'appartement' else "Villa"
-    etat_labels = {"neuf": "Neuf", "excellent": "Excellent", "bon": "Bon état",
-                   "moyen": "État moyen", "arenoveer": "À rénover"}
-    bien_data = [
+    etat_labels = {"neuf": "Neuf", "excellent": "Excellent", "bon": "Bon état", "moyen": "État moyen", "arenoveer": "À rénover"}
+    bien_table = Table([
         ["Type", type_label],
         ["Quartier", estimation['quartier']],
         ["Surface", f"{estimation['surface']} m²"],
         ["État général", etat_labels.get(estimation['etat'], estimation['etat'])],
         ["Prix m² référence", f"{estimation['prix_m2_base']:,} MAD/m²".replace(",", " ")],
         ["Prix m² ajusté", f"{estimation['prix_m2_ajuste']:,} MAD/m²".replace(",", " ")],
-    ]
-    bien_table = Table(bien_data, colWidths=[40*mm, 130*mm])
+    ], colWidths=[40*mm, 130*mm])
     bien_table.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0,0), (-1,-1), 9),
-        ('TEXTCOLOR', (0,0), (0,-1), colors.HexColor('#374151')),
-        ('TEXTCOLOR', (1,0), (1,-1), dark_color),
+        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,-1), 9),
+        ('TEXTCOLOR', (0,0), (0,-1), colors.HexColor('#374151')), ('TEXTCOLOR', (1,0), (1,-1), dark_color),
         ('ROWBACKGROUNDS', (0,0), (-1,-1), [colors.HexColor('#f9fafb'), colors.white]),
-        ('TOPPADDING', (0,0), (-1,-1), 6),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 6),
-        ('LEFTPADDING', (0,0), (-1,-1), 8),
+        ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6), ('LEFTPADDING', (0,0), (-1,-1), 8),
     ]))
     content.append(bien_table)
 
-    # ESTIMATION
     content.append(Paragraph("RÉSULTAT DE L'ESTIMATION", style_section))
     content.append(Spacer(1, 6))
-
-    fourchette_data = [[
+    fourchette_table = Table([[
         Paragraph(f"<b>{estimation['valeur_min']:,} MAD</b>".replace(",", " "),
-            ParagraphStyle('val', parent=styles['Normal'], fontSize=14,
-            fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
+            ParagraphStyle('val', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
         Paragraph("←  Fourchette  →",
-            ParagraphStyle('sep', parent=styles['Normal'], fontSize=9,
-            fontName='Helvetica', textColor=muted_color, alignment=TA_CENTER)),
+            ParagraphStyle('sep', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=muted_color, alignment=TA_CENTER)),
         Paragraph(f"<b>{estimation['valeur_max']:,} MAD</b>".replace(",", " "),
-            ParagraphStyle('val2', parent=styles['Normal'], fontSize=14,
-            fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
-    ]]
-    fourchette_table = Table(fourchette_data, colWidths=[55*mm, 60*mm, 55*mm])
+            ParagraphStyle('val2', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
+    ]], colWidths=[55*mm, 60*mm, 55*mm])
     fourchette_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f9fafb')),
         ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#e5e7eb')),
-        ('TOPPADDING', (0,0), (-1,-1), 12),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 12),
-        ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('TOPPADDING', (0,0), (-1,-1), 12), ('BOTTOMPADDING', (0,0), (-1,-1), 12), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
     ]))
     content.append(fourchette_table)
     content.append(Spacer(1, 8))
-
-    valeur_mid_data = [[
-        Paragraph(
-            f"Valeur centrale estimée : <b>{estimation['valeur_mid']:,} MAD</b>".replace(",", " "),
-            ParagraphStyle('mid', parent=styles['Normal'], fontSize=12,
-            fontName='Helvetica', textColor=or_color, alignment=TA_CENTER))
-    ]]
-    mid_table = Table(valeur_mid_data, colWidths=[170*mm])
+    mid_table = Table([[
+        Paragraph(f"Valeur centrale estimée : <b>{estimation['valeur_mid']:,} MAD</b>".replace(",", " "),
+            ParagraphStyle('mid', parent=styles['Normal'], fontSize=12, fontName='Helvetica', textColor=or_color, alignment=TA_CENTER))
+    ]], colWidths=[170*mm])
     mid_table.setStyle(TableStyle([
         ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#0d1117')),
-        ('TOPPADDING', (0,0), (-1,-1), 10),
-        ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+        ('TOPPADDING', (0,0), (-1,-1), 10), ('BOTTOMPADDING', (0,0), (-1,-1), 10),
     ]))
     content.append(mid_table)
 
-    # MÉTHODOLOGIE
     content.append(Paragraph("MÉTHODOLOGIE", style_section))
     content.append(Paragraph(
-        "Cette estimation repose sur le référentiel de prix Yakeey (données publiques, "
-        "mise à jour continue) ajusté par les coefficients terrain PropIntel : état général "
-        "du bien, étage, surface et équipements. La fourchette représente un intervalle de "
-        "confiance de ±10% autour de la valeur centrale.",
-        style_body))
+        "Cette estimation repose sur le référentiel de prix Yakeey (données publiques, mise à jour continue) "
+        "ajusté par les coefficients terrain PropIntel : état général du bien, étage, surface et équipements. "
+        "La fourchette représente un intervalle de confiance de ±10% autour de la valeur centrale.", style_body))
 
-    # CONTACT
-    content.append(HRFlowable(width="100%", thickness=0.5,
-        color=colors.HexColor('#e5e7eb'), spaceBefore=16, spaceAfter=10))
+    content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#e5e7eb'), spaceBefore=16, spaceAfter=10))
     content.append(Paragraph(
-        "Pour un accompagnement personnalisé : <b>Abdeloihed Meskini</b> · "
-        "Agent Élite Yakeey · <b>contact@propintel.ma</b> · propintel.ma",
+        "Pour un accompagnement personnalisé : <b>Abdeloihed Meskini</b> · Agent Élite Yakeey · <b>contact@propintel.ma</b> · propintel.ma",
         style_centre))
     content.append(Spacer(1, 8))
     content.append(Paragraph(
-        "Ce rapport est fourni à titre indicatif. PropIntel ne saurait être tenu "
-        "responsable des décisions prises sur la base de cette estimation. "
-        "Une expertise notariale reste recommandée pour toute transaction.",
+        "Ce rapport est fourni à titre indicatif. PropIntel ne saurait être tenu responsable des décisions "
+        "prises sur la base de cette estimation. Une expertise notariale reste recommandée pour toute transaction.",
         style_disclaimer))
 
     doc.build(content)
@@ -410,23 +329,15 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
     return base64.b64encode(buffer.read()).decode('utf-8')
 
 # ============================================================
-# ENVOI EMAIL SMTP
+# ENVOI EMAIL VIA RESEND API (HTTPS — pas de SMTP)
 # ============================================================
 
 def send_pdf_by_email(to_email, pdf_b64, quartier, valeur_mid, nom_client):
-    """Envoie le rapport PDF par email via SMTP Hostinger."""
+    """Envoie le rapport PDF par email via Resend API."""
     try:
-        smtp_host = os.environ.get('SMTP_HOST', 'smtp.hostinger.com')
-        smtp_port = int(os.environ.get('SMTP_PORT', 587))
-        smtp_user = os.environ.get('SMTP_USER', 'contact@propintel.ma')
-        smtp_password = os.environ.get('SMTP_PASSWORD', '')
+        api_key = os.environ.get('RESEND_API_KEY', '')
 
-        msg = MIMEMultipart()
-        msg['From'] = f'PropIntel <{smtp_user}>'
-        msg['To'] = to_email
-        msg['Subject'] = f'Votre estimation immobilière — {quartier}'
-
-        body = f"""
+        body_html = f"""
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
             <div style="background:#0d1117;padding:24px;text-align:center;">
                 <h1 style="color:#c9a84c;margin:0;font-size:24px;">PropIntel</h1>
@@ -450,27 +361,30 @@ def send_pdf_by_email(to_email, pdf_b64, quartier, valeur_mid, nom_client):
             </div>
         </div>
         """
-        msg.attach(MIMEText(body, 'html'))
 
-        # Pièce jointe PDF
-        pdf_bytes = base64.b64decode(pdf_b64)
         filename = f'estimation-propintel-{quartier.lower().replace(" ", "-")}.pdf'
-        part = MIMEBase('application', 'octet-stream')
-        part.set_payload(pdf_bytes)
-        encoders.encode_base64(part)
-        part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
-        msg.attach(part)
 
-        context = ssl.create_default_context()
-        with smtplib.SMTP(smtp_host, smtp_port) as server:
-            server.ehlo()
-            server.starttls(context=context)
-            server.ehlo()
-            server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_user, to_email, msg.as_string())
+        payload = {
+            "from": "PropIntel <contact@propintel.ma>",
+            "to": [to_email],
+            "subject": f"Votre estimation immobilière — {quartier}",
+            "html": body_html,
+            "attachments": [{"filename": filename, "content": pdf_b64}]
+        }
 
-        logger.info(f"Email envoyé avec succès à {to_email}")
-        return True
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            json=payload,
+            timeout=30
+        )
+
+        if response.status_code in (200, 201):
+            logger.info(f"Email envoyé avec succès à {to_email} via Resend")
+            return True
+        else:
+            logger.error(f"Erreur Resend {response.status_code}: {response.text}")
+            return False
 
     except Exception as e:
         logger.error(f"Erreur envoi email à {to_email}: {e}")
@@ -484,7 +398,7 @@ def send_pdf_by_email(to_email, pdf_b64, quartier, valeur_mid, nom_client):
 def health():
     return jsonify({
         "status": "ok",
-        "version": "1.1.0",
+        "version": "1.2.0",
         "quartiers": len(REFERENTIEL),
         "date": datetime.datetime.now().isoformat()
     })
@@ -493,11 +407,7 @@ def health():
 def quartiers():
     liste = []
     for nom, prix in REFERENTIEL.items():
-        liste.append({
-            "nom": nom,
-            "prix_appt": prix["appt"],
-            "prix_villa": prix["villa"],
-        })
+        liste.append({"nom": nom, "prix_appt": prix["appt"], "prix_villa": prix["villa"]})
     return jsonify({"quartiers": liste, "total": len(liste)})
 
 @app.route('/api/estimate', methods=['POST'])
@@ -507,8 +417,7 @@ def estimate():
         if not data:
             return jsonify({"error": "Données JSON manquantes"}), 400
 
-        requis = ["quartier", "type_bien", "surface", "etat"]
-        for champ in requis:
+        for champ in ["quartier", "type_bien", "surface", "etat"]:
             if champ not in data:
                 return jsonify({"error": f"Champ manquant : {champ}"}), 400
 
@@ -561,12 +470,8 @@ def estimate():
 def prix_quartier(quartier):
     ref = REFERENTIEL.get(quartier)
     if not ref:
-        return jsonify({"error": f"Quartier non trouvé"}), 404
-    return jsonify({
-        "quartier": quartier,
-        "prix_appt": ref["appt"],
-        "prix_villa": ref["villa"],
-    })
+        return jsonify({"error": "Quartier non trouvé"}), 404
+    return jsonify({"quartier": quartier, "prix_appt": ref["appt"], "prix_villa": ref["villa"]})
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5000)
