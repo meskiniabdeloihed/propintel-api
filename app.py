@@ -461,10 +461,15 @@ def send_pdf_by_email(to_email, pdf_b64, quartier, valeur_mid, nom_client):
         part.add_header('Content-Disposition', f'attachment; filename="{filename}"')
         msg.attach(part)
 
+        
         context = ssl.create_default_context()
-        with smtplib.SMTP_SSL(smtp_host, smtp_port, context=context) as server:
-            server.login(smtp_user, smtp_password)
-            server.sendmail(smtp_user, to_email, msg.as_string())
+with smtplib.SMTP(smtp_host, smtp_port) as server:
+    server.ehlo()
+    server.starttls(context=context)
+    server.ehlo()
+    server.login(smtp_user, smtp_password)
+    server.sendmail(smtp_user, to_email, msg.as_string())
+
 
         logger.info(f"Email envoyé avec succès à {to_email}")
         return True
