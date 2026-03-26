@@ -13,6 +13,8 @@ import logging
 import requests
 import os
 import threading
+import secrets
+import time
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,6 +22,21 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
+# ============================================================
+# OTP STORE (in-memory, TTL 10 minutes)
+# En production : remplacer par Redis ou Supabase
+# ============================================================
+OTP_STORE = {}  # { tel: { code, expires_at, verified } }
+OTP_TTL = 600   # 10 minutes
+
+# En dev : code fixe 1234
+# En prod : remplacer par appel Twilio/Vonage
+DEV_MODE = os.environ.get('OTP_DEV_MODE', 'true').lower() == 'true'
+DEV_CODE = '1234'
+
+# ============================================================
+# RÉFÉRENTIEL YAKEEY — MARRAKECH (mars 2026)
+# ============================================================
 REFERENTIEL = {
     "Abouab Gueliz - Mabrouka":     {"appt": 6684,  "villa": 7764},
     "Abouab Mhamid":                {"appt": 5467,  "villa": 3527},
@@ -168,21 +185,17 @@ def coeff_surface(surface, type_bien):
 def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
     if equipements is None:
         equipements = []
-
     ref = REFERENTIEL.get(quartier)
     if not ref:
         return None, f"Quartier '{quartier}' non trouvé dans le référentiel"
-
     cle_type = "appt" if type_bien == "appartement" else "villa"
     prix_m2_base = ref.get(cle_type)
-
     if not prix_m2_base:
         autre = ref.get("villa" if cle_type == "appt" else "appt")
         if autre:
             prix_m2_base = autre * 0.90
         else:
-            return None, f"Aucun prix disponible pour ce type de bien dans ce quartier"
-
+            return None, "Aucun prix disponible pour ce type de bien dans ce quartier"
     c_etat = COEFF_ETAT.get(etat, 1.0)
     c_etage = COEFF_ETAGE.get(min(etage, 4), 1.0) if type_bien == "appartement" else 1.0
     c_surface = coeff_surface(surface, type_bien)
@@ -193,7 +206,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
     valeur_min = round(valeur_centrale * 0.90 / 1000) * 1000
     valeur_max = round(valeur_centrale * 1.10 / 1000) * 1000
     valeur_mid = round(valeur_centrale / 1000) * 1000
-
     return {
         "prix_m2_base": round(prix_m2_base),
         "prix_m2_ajuste": round(prix_m2_ajuste),
@@ -212,99 +224,97 @@ def estimer(quartier, type_bien, surface, etat, etage=1, equipements=None):
         }
     }, None
 
-def generer_pdf(estimation, nom_client, email_client, tel_client):
+# ============================================================
+# GÉNÉRATION PDF
+# ============================================================
+def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4,
         rightMargin=20*mm, leftMargin=20*mm, topMargin=20*mm, bottomMargin=20*mm)
-
     styles = getSampleStyleSheet()
-    or_color = colors.HexColor('#c9a84c')
+    or_color   = colors.HexColor('#c9a84c')
     dark_color = colors.HexColor('#0d1117')
     muted_color = colors.HexColor('#6b7280')
 
-    style_titre = ParagraphStyle('titre', parent=styles['Normal'],
-        fontSize=22, fontName='Helvetica-Bold', textColor=dark_color, spaceAfter=4, alignment=TA_LEFT)
-    style_sous_titre = ParagraphStyle('sous_titre', parent=styles['Normal'],
-        fontSize=11, fontName='Helvetica', textColor=muted_color, spaceAfter=16, alignment=TA_LEFT)
-    style_section = ParagraphStyle('section', parent=styles['Normal'],
-        fontSize=9, fontName='Helvetica-Bold', textColor=or_color, spaceBefore=14, spaceAfter=6, alignment=TA_LEFT)
-    style_body = ParagraphStyle('body', parent=styles['Normal'],
-        fontSize=10, fontName='Helvetica', textColor=dark_color, spaceAfter=4, leading=16)
-    style_disclaimer = ParagraphStyle('disclaimer', parent=styles['Normal'],
-        fontSize=8, fontName='Helvetica', textColor=muted_color, spaceAfter=4, leading=12)
-    style_centre = ParagraphStyle('centre', parent=styles['Normal'],
-        fontSize=10, fontName='Helvetica', textColor=dark_color, alignment=TA_CENTER)
+    style_titre     = ParagraphStyle('titre', parent=styles['Normal'], fontSize=22, fontName='Helvetica-Bold', textColor=dark_color, spaceAfter=4, alignment=TA_LEFT)
+    style_sous_titre= ParagraphStyle('sous_titre', parent=styles['Normal'], fontSize=11, fontName='Helvetica', textColor=muted_color, spaceAfter=16, alignment=TA_LEFT)
+    style_section   = ParagraphStyle('section', parent=styles['Normal'], fontSize=9, fontName='Helvetica-Bold', textColor=or_color, spaceBefore=14, spaceAfter=6, alignment=TA_LEFT)
+    style_body      = ParagraphStyle('body', parent=styles['Normal'], fontSize=10, fontName='Helvetica', textColor=dark_color, spaceAfter=4, leading=16)
+    style_disclaimer= ParagraphStyle('disclaimer', parent=styles['Normal'], fontSize=8, fontName='Helvetica', textColor=muted_color, spaceAfter=4, leading=12)
+    style_centre    = ParagraphStyle('centre', parent=styles['Normal'], fontSize=10, fontName='Helvetica', textColor=dark_color, alignment=TA_CENTER)
 
     content = []
     date_str = datetime.datetime.now().strftime("%d/%m/%Y")
 
     header_data = [[
-        Paragraph("<b>PropIntel</b>", ParagraphStyle('logo', parent=styles['Normal'],
-            fontSize=18, fontName='Helvetica-Bold', textColor=or_color)),
+        Paragraph("<b>PropIntel</b>", ParagraphStyle('logo', parent=styles['Normal'], fontSize=18, fontName='Helvetica-Bold', textColor=or_color)),
         Paragraph(f"Rapport d'Estimation<br/><font size=9 color='grey'>{date_str}</font>",
-            ParagraphStyle('right', parent=styles['Normal'],
-            fontSize=11, fontName='Helvetica', textColor=dark_color, alignment=TA_RIGHT))
+            ParagraphStyle('right', parent=styles['Normal'], fontSize=11, fontName='Helvetica', textColor=dark_color, alignment=TA_RIGHT))
     ]]
     header_table = Table(header_data, colWidths=[85*mm, 85*mm])
-    header_table.setStyle(TableStyle([('VALIGN', (0,0), (-1,-1), 'MIDDLE'), ('BOTTOMPADDING', (0,0), (-1,-1), 8)]))
+    header_table.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'MIDDLE'),('BOTTOMPADDING',(0,0),(-1,-1),8)]))
     content.append(header_table)
     content.append(HRFlowable(width="100%", thickness=1, color=or_color, spaceAfter=16))
     content.append(Paragraph("Estimation Immobilière", style_titre))
     content.append(Paragraph("Intelligence Immobilière · Marrakech · Modèle calibré sur données réelles 2024–2026", style_sous_titre))
 
     content.append(Paragraph("INFORMATIONS CLIENT", style_section))
-    client_table = Table([["Nom", nom_client], ["Email", email_client], ["Téléphone", tel_client]], colWidths=[40*mm, 130*mm])
+    client_table = Table([
+        ["Nom", nom_client],
+        ["Téléphone", tel_client],
+        ["WhatsApp", whatsapp_client],
+    ], colWidths=[40*mm, 130*mm])
     client_table.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,-1), 9),
-        ('TEXTCOLOR', (0,0), (0,-1), colors.HexColor('#374151')), ('TEXTCOLOR', (1,0), (1,-1), dark_color),
-        ('ROWBACKGROUNDS', (0,0), (-1,-1), [colors.HexColor('#f9fafb'), colors.white]),
-        ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6), ('LEFTPADDING', (0,0), (-1,-1), 8),
+        ('FONTNAME',(0,0),(0,-1),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),9),
+        ('TEXTCOLOR',(0,0),(0,-1),colors.HexColor('#374151')), ('TEXTCOLOR',(1,0),(1,-1),dark_color),
+        ('ROWBACKGROUNDS',(0,0),(-1,-1),[colors.HexColor('#f9fafb'),colors.white]),
+        ('TOPPADDING',(0,0),(-1,-1),6), ('BOTTOMPADDING',(0,0),(-1,-1),6), ('LEFTPADDING',(0,0),(-1,-1),8),
     ]))
     content.append(client_table)
 
     content.append(Paragraph("BIEN ÉVALUÉ", style_section))
     type_label = "Appartement" if estimation['type_bien'] == 'appartement' else "Villa"
-    etat_labels = {"neuf": "Neuf", "excellent": "Excellent", "bon": "Bon état", "moyen": "État moyen", "arenoveer": "À rénover"}
+    etat_labels = {"neuf":"Neuf","excellent":"Excellent","bon":"Bon état","moyen":"État moyen","arenoveer":"À rénover"}
     bien_table = Table([
         ["Type", type_label],
         ["Quartier", estimation['quartier']],
         ["Surface", f"{estimation['surface']} m²"],
         ["État général", etat_labels.get(estimation['etat'], estimation['etat'])],
-        ["Prix m² référence", f"{estimation['prix_m2_base']:,} MAD/m²".replace(",", " ")],
-        ["Prix m² ajusté", f"{estimation['prix_m2_ajuste']:,} MAD/m²".replace(",", " ")],
+        ["Prix m² référence", f"{estimation['prix_m2_base']:,} MAD/m²".replace(","," ")],
+        ["Prix m² ajusté", f"{estimation['prix_m2_ajuste']:,} MAD/m²".replace(","," ")],
     ], colWidths=[40*mm, 130*mm])
     bien_table.setStyle(TableStyle([
-        ('FONTNAME', (0,0), (0,-1), 'Helvetica-Bold'), ('FONTSIZE', (0,0), (-1,-1), 9),
-        ('TEXTCOLOR', (0,0), (0,-1), colors.HexColor('#374151')), ('TEXTCOLOR', (1,0), (1,-1), dark_color),
-        ('ROWBACKGROUNDS', (0,0), (-1,-1), [colors.HexColor('#f9fafb'), colors.white]),
-        ('TOPPADDING', (0,0), (-1,-1), 6), ('BOTTOMPADDING', (0,0), (-1,-1), 6), ('LEFTPADDING', (0,0), (-1,-1), 8),
+        ('FONTNAME',(0,0),(0,-1),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),9),
+        ('TEXTCOLOR',(0,0),(0,-1),colors.HexColor('#374151')), ('TEXTCOLOR',(1,0),(1,-1),dark_color),
+        ('ROWBACKGROUNDS',(0,0),(-1,-1),[colors.HexColor('#f9fafb'),colors.white]),
+        ('TOPPADDING',(0,0),(-1,-1),6), ('BOTTOMPADDING',(0,0),(-1,-1),6), ('LEFTPADDING',(0,0),(-1,-1),8),
     ]))
     content.append(bien_table)
 
     content.append(Paragraph("RÉSULTAT DE L'ESTIMATION", style_section))
     content.append(Spacer(1, 6))
     fourchette_table = Table([[
-        Paragraph(f"<b>{estimation['valeur_min']:,} MAD</b>".replace(",", " "),
+        Paragraph(f"<b>{estimation['valeur_min']:,} MAD</b>".replace(","," "),
             ParagraphStyle('val', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
         Paragraph("←  Fourchette  →",
             ParagraphStyle('sep', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=muted_color, alignment=TA_CENTER)),
-        Paragraph(f"<b>{estimation['valeur_max']:,} MAD</b>".replace(",", " "),
+        Paragraph(f"<b>{estimation['valeur_max']:,} MAD</b>".replace(","," "),
             ParagraphStyle('val2', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
     ]], colWidths=[55*mm, 60*mm, 55*mm])
     fourchette_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#f9fafb')),
-        ('BOX', (0,0), (-1,-1), 1, colors.HexColor('#e5e7eb')),
-        ('TOPPADDING', (0,0), (-1,-1), 12), ('BOTTOMPADDING', (0,0), (-1,-1), 12), ('VALIGN', (0,0), (-1,-1), 'MIDDLE'),
+        ('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#f9fafb')),
+        ('BOX',(0,0),(-1,-1),1,colors.HexColor('#e5e7eb')),
+        ('TOPPADDING',(0,0),(-1,-1),12), ('BOTTOMPADDING',(0,0),(-1,-1),12), ('VALIGN',(0,0),(-1,-1),'MIDDLE'),
     ]))
     content.append(fourchette_table)
     content.append(Spacer(1, 8))
     mid_table = Table([[
-        Paragraph(f"Valeur centrale estimée : <b>{estimation['valeur_mid']:,} MAD</b>".replace(",", " "),
+        Paragraph(f"Valeur centrale estimée : <b>{estimation['valeur_mid']:,} MAD</b>".replace(","," "),
             ParagraphStyle('mid', parent=styles['Normal'], fontSize=12, fontName='Helvetica', textColor=or_color, alignment=TA_CENTER))
     ]], colWidths=[170*mm])
     mid_table.setStyle(TableStyle([
-        ('BACKGROUND', (0,0), (-1,-1), colors.HexColor('#0d1117')),
-        ('TOPPADDING', (0,0), (-1,-1), 10), ('BOTTOMPADDING', (0,0), (-1,-1), 10),
+        ('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#0d1117')),
+        ('TOPPADDING',(0,0),(-1,-1),10), ('BOTTOMPADDING',(0,0),(-1,-1),10),
     ]))
     content.append(mid_table)
 
@@ -316,8 +326,8 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
 
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#e5e7eb'), spaceBefore=16, spaceAfter=10))
     content.append(Paragraph(
-        "Pour un accompagnement personnalisé : <b>Abdeloihed Meskini</b> · Agent Élite Yakeey · <b>contact@propintel.ma</b> · propintel.ma",
-        style_centre))
+        "Pour un accompagnement personnalisé : <b>Abdeloihed Meskini</b> · "
+        "Agent Élite Yakeey · <b>contact@propintel.ma</b> · propintel.ma", style_centre))
     content.append(Spacer(1, 8))
     content.append(Paragraph(
         "Ce rapport est fourni à titre indicatif. PropIntel ne saurait être tenu responsable des décisions "
@@ -329,66 +339,58 @@ def generer_pdf(estimation, nom_client, email_client, tel_client):
     return base64.b64encode(buffer.read()).decode('utf-8')
 
 # ============================================================
-# ENVOI EMAIL VIA RESEND API (HTTPS — pas de SMTP)
+# NOTIFICATION EMAIL AGENT (Resend)
 # ============================================================
-
-def send_pdf_by_email(to_email, pdf_b64, quartier, valeur_mid, nom_client):
-    """Envoie le rapport PDF par email via Resend API."""
+def notify_agent(nom, tel, whatsapp, estimation):
+    """Envoie une notification de nouveau lead à l'agent."""
     try:
         api_key = os.environ.get('RESEND_API_KEY', '')
+        valeur_mid = estimation['valeur_mid']
+        quartier = estimation['quartier']
+        date_str = datetime.datetime.now().strftime("%d/%m/%Y à %H:%M")
 
         body_html = f"""
         <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-            <div style="background:#0d1117;padding:24px;text-align:center;">
-                <h1 style="color:#c9a84c;margin:0;font-size:24px;">PropIntel</h1>
-                <p style="color:#aaa;margin:4px 0 0;font-size:13px;">Intelligence Immobilière · Marrakech</p>
+            <div style="background:#0d1117;padding:20px 24px;text-align:center;">
+                <h1 style="color:#c9a84c;margin:0;font-size:20px;">PropIntel</h1>
+                <p style="color:#aaa;margin:4px 0 0;font-size:12px;">Nouveau lead · {date_str}</p>
             </div>
-            <div style="padding:32px 24px;color:#333;">
-                <p>Bonjour {nom_client},</p>
-                <p>Veuillez trouver ci-joint votre rapport d'estimation immobilière pour le quartier <strong>{quartier}</strong>.</p>
-                <div style="background:#f5f5f5;border-left:4px solid #c9a84c;padding:16px;margin:24px 0;">
-                    <p style="margin:0;font-size:18px;">Valeur estimée : <strong>{valeur_mid:,} MAD</strong></p>
+            <div style="padding:28px 24px;color:#333;background:#fff;">
+                <h2 style="font-size:18px;margin:0 0 20px;color:#0d1117;">🔔 Nouveau lead estimateur</h2>
+                <table style="width:100%;border-collapse:collapse;">
+                    <tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;width:140px;">Nom</td><td style="padding:10px;">{nom}</td></tr>
+                    <tr><td style="padding:10px;font-weight:bold;">Téléphone</td><td style="padding:10px;"><a href="tel:{tel}" style="color:#c9a84c;">{tel}</a></td></tr>
+                    <tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">WhatsApp</td><td style="padding:10px;"><a href="https://wa.me/{whatsapp.replace('+','').replace(' ','')}" style="color:#25D366;">💬 {whatsapp}</a></td></tr>
+                    <tr><td style="padding:10px;font-weight:bold;">Quartier</td><td style="padding:10px;">{quartier}</td></tr>
+                    <tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">Type</td><td style="padding:10px;">{estimation['type_bien'].capitalize()} · {estimation['surface']} m²</td></tr>
+                    <tr><td style="padding:10px;font-weight:bold;">État</td><td style="padding:10px;">{estimation['etat']}</td></tr>
+                </table>
+                <div style="background:#0d1117;padding:16px;margin:20px 0;text-align:center;border-radius:6px;">
+                    <p style="margin:0;font-size:20px;color:#c9a84c;font-weight:bold;">{valeur_mid:,} MAD</p>
+                    <p style="margin:4px 0 0;color:#aaa;font-size:12px;">Fourchette : {estimation['valeur_min']:,} – {estimation['valeur_max']:,} MAD</p>
                 </div>
-                <p>Pour toute question ou pour un accompagnement personnalisé, répondez directement à cet email.</p>
-                <p style="margin-top:32px;">Cordialement,<br>
-                <strong>Abdeloihed Meskini</strong><br>
-                Agent Élite Yakeey · PropIntel</p>
-            </div>
-            <div style="background:#f5f5f5;padding:16px;text-align:center;font-size:12px;color:#888;">
-                <a href="https://propintel.ma" style="color:#c9a84c;text-decoration:none;">propintel.ma</a>
-                &nbsp;·&nbsp;
-                <a href="mailto:contact@propintel.ma" style="color:#c9a84c;text-decoration:none;">contact@propintel.ma</a>
+                <p style="font-size:12px;color:#888;">Le client a téléchargé son rapport PDF. Contactez-le rapidement.</p>
             </div>
         </div>
-        """
-
-        filename = f'estimation-propintel-{quartier.lower().replace(" ", "-")}.pdf'
+        """.replace(',', ' ')
 
         payload = {
-            "from": "PropIntel <contact@propintel.ma>",
-            "to": [to_email],
-            "subject": f"Votre estimation immobilière — {quartier}",
+            "from": "PropIntel Leads <contact@propintel.ma>",
+            "to": ["contact@propintel.ma"],
+            "subject": f"🔔 Nouveau lead — {nom} · {quartier} · {valeur_mid:,} MAD".replace(',', ' '),
             "html": body_html,
-            "attachments": [{"filename": filename, "content": pdf_b64}]
         }
-
         response = requests.post(
             "https://api.resend.com/emails",
             headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
-            json=payload,
-            timeout=30
+            json=payload, timeout=30
         )
-
         if response.status_code in (200, 201):
-            logger.info(f"Email envoyé avec succès à {to_email} via Resend")
-            return True
+            logger.info(f"Notification agent envoyée pour lead : {nom} / {tel}")
         else:
-            logger.error(f"Erreur Resend {response.status_code}: {response.text}")
-            return False
-
+            logger.error(f"Erreur Resend notification: {response.status_code} {response.text}")
     except Exception as e:
-        logger.error(f"Erreur envoi email à {to_email}: {e}")
-        return False
+        logger.error(f"Erreur notification agent: {e}")
 
 # ============================================================
 # ENDPOINTS API
@@ -398,18 +400,97 @@ def send_pdf_by_email(to_email, pdf_b64, quartier, valeur_mid, nom_client):
 def health():
     return jsonify({
         "status": "ok",
-        "version": "1.2.0",
+        "version": "1.3.0",
         "quartiers": len(REFERENTIEL),
+        "otp_dev_mode": DEV_MODE,
         "date": datetime.datetime.now().isoformat()
     })
 
 @app.route('/api/quartiers', methods=['GET'])
 def quartiers():
-    liste = []
-    for nom, prix in REFERENTIEL.items():
-        liste.append({"nom": nom, "prix_appt": prix["appt"], "prix_villa": prix["villa"]})
+    liste = [{"nom": n, "prix_appt": p["appt"], "prix_villa": p["villa"]} for n, p in REFERENTIEL.items()]
     return jsonify({"quartiers": liste, "total": len(liste)})
 
+# ============================================================
+# OTP : Envoyer code
+# ============================================================
+@app.route('/api/send-otp', methods=['POST'])
+def send_otp():
+    try:
+        data = request.get_json()
+        tel = data.get('tel', '').strip()
+        if not tel or len(tel) < 8:
+            return jsonify({"error": "Numéro de téléphone invalide"}), 400
+
+        # Nettoyage OTP expiré
+        now = time.time()
+        expired = [k for k, v in OTP_STORE.items() if v['expires_at'] < now]
+        for k in expired:
+            del OTP_STORE[k]
+
+        if DEV_MODE:
+            code = DEV_CODE
+            logger.info(f"[DEV] OTP pour {tel} : {code}")
+        else:
+            code = str(secrets.randbelow(900000) + 100000)
+            # TODO: envoyer via Twilio/Vonage
+            # twilio_client.messages.create(to=tel, from_=TWILIO_FROM, body=f"PropIntel : votre code est {code}")
+
+        OTP_STORE[tel] = {
+            "code": code,
+            "expires_at": now + OTP_TTL,
+            "verified": False,
+            "attempts": 0
+        }
+
+        return jsonify({
+            "success": True,
+            "message": "Code envoyé" if not DEV_MODE else "Code dev : 1234",
+            "dev_mode": DEV_MODE
+        })
+    except Exception as e:
+        logger.error(f"Erreur send_otp: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================
+# OTP : Vérifier code
+# ============================================================
+@app.route('/api/verify-otp', methods=['POST'])
+def verify_otp():
+    try:
+        data = request.get_json()
+        tel = data.get('tel', '').strip()
+        code = data.get('code', '').strip()
+
+        if not tel or not code:
+            return jsonify({"error": "Données manquantes"}), 400
+
+        entry = OTP_STORE.get(tel)
+        if not entry:
+            return jsonify({"error": "Code expiré ou numéro non trouvé"}), 400
+
+        if time.time() > entry['expires_at']:
+            del OTP_STORE[tel]
+            return jsonify({"error": "Code expiré"}), 400
+
+        entry['attempts'] = entry.get('attempts', 0) + 1
+        if entry['attempts'] > 5:
+            del OTP_STORE[tel]
+            return jsonify({"error": "Trop de tentatives"}), 429
+
+        if code != entry['code']:
+            return jsonify({"error": "Code incorrect", "attempts_left": 5 - entry['attempts']}), 400
+
+        entry['verified'] = True
+        return jsonify({"success": True, "verified": True})
+
+    except Exception as e:
+        logger.error(f"Erreur verify_otp: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ============================================================
+# ESTIMATION (requiert OTP vérifié)
+# ============================================================
 @app.route('/api/estimate', methods=['POST'])
 def estimate():
     try:
@@ -417,16 +498,25 @@ def estimate():
         if not data:
             return jsonify({"error": "Données JSON manquantes"}), 400
 
-        for champ in ["quartier", "type_bien", "surface", "etat"]:
-            if champ not in data:
+        # Validation champs requis
+        for champ in ["quartier", "type_bien", "surface", "etat", "nom", "tel", "whatsapp"]:
+            if not data.get(champ):
                 return jsonify({"error": f"Champ manquant : {champ}"}), 400
 
+        nom      = data["nom"].strip()
+        tel      = data["tel"].strip()
+        whatsapp = data["whatsapp"].strip()
         quartier = data["quartier"]
         type_bien = data["type_bien"].lower()
-        surface = float(data["surface"])
-        etat = data["etat"].lower()
-        etage = int(data.get("etage", 1))
+        surface  = float(data["surface"])
+        etat     = data["etat"].lower()
+        etage    = int(data.get("etage", 1))
         equipements = data.get("equipements", [])
+
+        # Vérification OTP
+        entry = OTP_STORE.get(tel)
+        if not entry or not entry.get('verified'):
+            return jsonify({"error": "Téléphone non vérifié. Veuillez valider votre code OTP."}), 403
 
         if type_bien not in ["appartement", "villa"]:
             return jsonify({"error": "type_bien doit être 'appartement' ou 'villa'"}), 400
@@ -439,27 +529,21 @@ def estimate():
         if erreur:
             return jsonify({"error": erreur}), 400
 
-        pdf_b64 = None
-        nom = data.get("nom", "")
-        email = data.get("email", "")
-        tel = data.get("tel", "")
+        # Génération PDF
+        pdf_b64 = generer_pdf(estimation, nom, tel, whatsapp)
 
-        if nom and email:
-            pdf_b64 = generer_pdf(estimation, nom, email, tel)
+        # Notification agent en arrière-plan
+        thread = threading.Thread(target=notify_agent, args=(nom, tel, whatsapp, estimation))
+        thread.daemon = True
+        thread.start()
 
-        if pdf_b64 and email:
-            thread = threading.Thread(
-                target=send_pdf_by_email,
-                args=(email, pdf_b64, estimation['quartier'], estimation['valeur_mid'], nom or "Client")
-            )
-            thread.daemon = True
-            thread.start()
+        # Invalider OTP après usage
+        del OTP_STORE[tel]
 
         return jsonify({
             "success": True,
             "estimation": estimation,
             "pdf_base64": pdf_b64,
-            "email_sent": "pending" if (pdf_b64 and email) else False,
         })
 
     except Exception as e:
