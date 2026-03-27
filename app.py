@@ -24,13 +24,10 @@ CORS(app)
 
 # ============================================================
 # OTP STORE (in-memory, TTL 10 minutes)
-# En production : remplacer par Redis ou Supabase
 # ============================================================
 OTP_STORE = {}  # { tel: { code, expires_at, verified } }
 OTP_TTL = 600   # 10 minutes
 
-# En dev : code fixe 1234
-# En prod : remplacer par appel Twilio/Vonage
 DEV_MODE = os.environ.get('OTP_DEV_MODE', 'true').lower() == 'true'
 DEV_CODE = '1234'
 
@@ -342,7 +339,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
 # NOTIFICATION EMAIL AGENT (Resend)
 # ============================================================
 def notify_agent(nom, tel, whatsapp, estimation):
-    """Envoie une notification de nouveau lead à l'agent."""
     try:
         api_key = os.environ.get('RESEND_API_KEY', '')
         valeur_mid = estimation['valeur_mid']
@@ -393,6 +389,21 @@ def notify_agent(nom, tel, whatsapp, estimation):
         logger.error(f"Erreur notification agent: {e}")
 
 # ============================================================
+# FONCTION TWILIO — Envoi SMS OTP
+# ============================================================
+def send_sms_otp(phone, code):
+    from twilio.rest import Client
+    client = Client(
+        os.environ.get("TWILIO_SID"),
+        os.environ.get("TWILIO_TOKEN")
+    )
+    client.messages.create(
+        body=f"PropIntel - Votre code de vérification : {code}",
+        from_=os.environ.get("TWILIO_FROM"),
+        to=phone
+    )
+
+# ============================================================
 # ENDPOINTS API
 # ============================================================
 
@@ -400,7 +411,7 @@ def notify_agent(nom, tel, whatsapp, estimation):
 def health():
     return jsonify({
         "status": "ok",
-        "version": "1.3.0",
+        "version": "1.4.0",
         "quartiers": len(REFERENTIEL),
         "otp_dev_mode": DEV_MODE,
         "date": datetime.datetime.now().isoformat()
@@ -419,8 +430,8 @@ def send_otp():
     try:
         data = request.get_json()
         tel = data.get('tel', '').strip()
-        if not tel or len(tel) < 8:
-            return jsonify({"error": "Numéro de téléphone invalide"}), 400
+        if not tel:
+            return jsonify({"error": "Numéro de téléphone requis"}), 400
 
         # Nettoyage OTP expiré
         now = time.time()
@@ -433,8 +444,12 @@ def send_otp():
             logger.info(f"[DEV] OTP pour {tel} : {code}")
         else:
             code = str(secrets.randbelow(900000) + 100000)
-            # TODO: envoyer via Twilio/Vonage
-            # twilio_client.messages.create(to=tel, from_=TWILIO_FROM, body=f"PropIntel : votre code est {code}")
+            try:
+                send_sms_otp(tel, code)
+                logger.info(f"[PROD] OTP Twilio envoyé à {tel}")
+            except Exception as e:
+                logger.error(f"Erreur Twilio: {e}")
+                return jsonify({"error": "Échec envoi SMS. Vérifiez votre numéro."}), 500
 
         OTP_STORE[tel] = {
             "code": code,
@@ -498,7 +513,6 @@ def estimate():
         if not data:
             return jsonify({"error": "Données JSON manquantes"}), 400
 
-        # Validation champs requis
         for champ in ["quartier", "type_bien", "surface", "etat", "nom", "tel", "whatsapp"]:
             if not data.get(champ):
                 return jsonify({"error": f"Champ manquant : {champ}"}), 400
@@ -513,7 +527,6 @@ def estimate():
         etage    = int(data.get("etage", 1))
         equipements = data.get("equipements", [])
 
-        # Vérification OTP
         entry = OTP_STORE.get(tel)
         if not entry or not entry.get('verified'):
             return jsonify({"error": "Téléphone non vérifié. Veuillez valider votre code OTP."}), 403
@@ -529,15 +542,12 @@ def estimate():
         if erreur:
             return jsonify({"error": erreur}), 400
 
-        # Génération PDF
         pdf_b64 = generer_pdf(estimation, nom, tel, whatsapp)
 
-        # Notification agent en arrière-plan
         thread = threading.Thread(target=notify_agent, args=(nom, tel, whatsapp, estimation))
         thread.daemon = True
         thread.start()
 
-        # Invalider OTP après usage
         del OTP_STORE[tel]
 
         return jsonify({
