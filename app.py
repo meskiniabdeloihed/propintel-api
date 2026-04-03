@@ -406,6 +406,8 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     etat_labels = {"neuf":"Neuf","excellent":"Excellent","bon":"Bon état","moyen":"État moyen","arenoveer":"À rénover"}
     liq_labels  = {1:"Faible","2":"Moyenne",2:"Moyenne",3:"Élevée"}
     impl_labels = {"isolee":"Isolée","jumelee":"Jumelée","bande":"En bande"}
+    niv_labels  = {"plain_pied":"Plain-pied (RDC)","r1":"R+1","r2":"R+2","r3":"R+3 et +"}
+    ss_labels   = {"avec_ss":"Avec sous-sol aménagé","avec_ss_brut":"Avec sous-sol brut"}
 
     bien_rows = [
         ["Type",             type_labels.get(estimation['type_bien'], estimation['type_bien'])],
@@ -418,6 +420,10 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]
     if estimation.get('implantation'):
         bien_rows.insert(2, ["Implantation", impl_labels.get(estimation['implantation'], estimation['implantation'])])
+    if estimation.get('niveaux_dar'):
+        bien_rows.insert(3, ["Niveaux", niv_labels.get(estimation['niveaux_dar'], estimation['niveaux_dar'])])
+    if estimation.get('sous_sol'):
+        bien_rows.insert(3, ["Sous-sol", ss_labels.get(estimation['sous_sol'], estimation['sous_sol'])])
 
     bien_table = Table(bien_rows, colWidths=[45*mm, 125*mm])
     bien_table.setStyle(TableStyle([
@@ -690,6 +696,8 @@ def estimate():
         pieces      = data.get("pieces", None)
         anciennete  = data.get("anciennete", None)
         implantation= data.get("implantation", None)
+        niveaux_dar = data.get("niveaux_dar", None)
+        sous_sol    = data.get("sous_sol", None)
 
         # Vérification OTP
         entry = OTP_STORE.get(tel)
@@ -720,6 +728,8 @@ def estimate():
 
         # Stocker implantation pour le PDF
         estimation['implantation'] = implantation
+        estimation['niveaux_dar']  = niveaux_dar
+        estimation['sous_sol']     = sous_sol
 
         pdf_b64 = generer_pdf(estimation, nom, tel, whatsapp)
 
