@@ -309,7 +309,7 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
     fourchette_low, fourchette_high = FOURCHETTE_LIQ.get(liq, (0.90, 1.10))
 
     # Prix final
-    prix_m2_ajuste = (prix_m2_base
+    prix_m2_après application des coefficients = (prix_m2_base
                       * c_etat
                       * c_etage
                       * c_surface
