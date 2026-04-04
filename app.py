@@ -22,20 +22,11 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# ============================================================
-# OTP STORE (in-memory, TTL 10 minutes)
-# ============================================================
 OTP_STORE = {}
 OTP_TTL   = 600
-
 DEV_MODE = os.environ.get('OTP_DEV_MODE', 'true').lower() == 'true'
 DEV_CODE = '1234'
 
-# ============================================================
-# RÉFÉRENTIEL YAKEEY — MARRAKECH (mars 2026)
-# Colonnes : appt, villa, dar (0.85×appt), riad (1.10×appt Médina)
-# liq : liquidité marché 1=faible 2=moyenne 3=élevée
-# ============================================================
 REFERENTIEL = {
     "Abouab Gueliz - Mabrouka":     {"appt": 6684,  "villa": 7764,  "dar": 5682,  "riad": None,  "liq": 3},
     "Abouab Mhamid":                {"appt": 5467,  "villa": 3527,  "dar": 4647,  "riad": None,  "liq": 2},
@@ -143,10 +134,6 @@ REFERENTIEL = {
     "Zohor Targa - Zephyr":         {"appt": 6330,  "villa": 6507,  "dar": 5190,  "riad": None,  "liq": 2},
 }
 
-# ============================================================
-# COEFFICIENTS
-# ============================================================
-
 COEFF_ETAT = {
     "neuf":      1.15,
     "excellent": 1.10,
@@ -155,24 +142,11 @@ COEFF_ETAT = {
     "arenoveer": 0.75,
 }
 
-# Étage étendu jusqu'à 10+ (appt uniquement)
-# Dernier étage avec terrasse = traité via équipements (terrasse_privative)
 COEFF_ETAGE = {
-    -1: 0.88,  # RDC commercial / semi-enterré
-    0:  0.95,  # RDC résidentiel
-    1:  1.00,
-    2:  1.02,
-    3:  1.05,
-    4:  1.07,
-    5:  1.08,
-    6:  1.09,
-    7:  1.10,
-    8:  1.10,
-    9:  1.10,
-    10: 1.10,
+    -1: 0.88, 0: 0.95, 1: 1.00, 2: 1.02, 3: 1.05,
+    4: 1.07, 5: 1.08, 6: 1.09, 7: 1.10, 8: 1.10, 9: 1.10, 10: 1.10,
 }
 
-# Ancienneté du bien (distinct de l'état)
 COEFF_ANCIENNETE = {
     "neuf_2022_plus":  1.00,
     "recent_2015_21":  0.97,
@@ -180,75 +154,45 @@ COEFF_ANCIENNETE = {
     "ancien_avant_05": 0.88,
 }
 
-# Nombre de pièces / chambres
 COEFF_PIECES = {
-    "studio": 0.92,
-    "f1":     0.95,
-    "f2":     1.00,
-    "f3":     1.03,
-    "f4":     1.06,
-    "f5plus": 1.08,
+    "studio": 0.92, "f1": 0.95, "f2": 1.00,
+    "f3": 1.03, "f4": 1.06, "f5plus": 1.08,
 }
 
-# Implantation villa/maison
 COEFF_IMPLANTATION = {
-    "isolee":   1.00,  # référence
-    "jumelee":  0.93,  # mur mitoyen 1 côté
-    "bande":    0.86,  # murs mitoyens 2 côtés
+    "isolee": 1.00, "jumelee": 0.93, "bande": 0.86,
 }
 
-# Équipements — bonus additifs
 BONUS_EQUIPEMENTS = {
-    # Communs appt + villa
-    "parking":            0.04,
-    "ascenseur":          0.03,
-    "piscine":            0.08,
-    "gardien":            0.02,
-    "terrasse":           0.03,
-    "vue":                0.05,
-    "residence_fermee":   0.05,  # NOUVEAU — résidence sécurisée (appt + villa)
-    "digicode_camera":    0.02,  # NOUVEAU — sécurité électronique
-    # Villa / Maison
-    "jardin":             0.04,
-    "terrain_sup_300":    0.03,  # terrain > 300 m² en plus du bâti
-    "terrasse_privative": 0.06,  # dernier étage appt ou rooftop villa
-    "double_garage":      0.03,
+    "parking": 0.04, "ascenseur": 0.03, "piscine": 0.08,
+    "gardien": 0.02, "terrasse": 0.03, "vue": 0.05,
+    "residence_fermee": 0.05, "digicode_camera": 0.02,
+    "jardin": 0.04, "terrain_sup_300": 0.03,
+    "terrasse_privative": 0.06, "double_garage": 0.03,
 }
 
-# Liquidité quartier → fourchette dynamique
 FOURCHETTE_LIQ = {
-    1: (0.88, 1.12),  # périphérie liq faible → ±12%
-    2: (0.90, 1.10),  # standard → ±10%
-    3: (0.92, 1.08),  # centre liquide → ±8%
+    1: (0.88, 1.12), 2: (0.90, 1.10), 3: (0.92, 1.08),
 }
 
-# Décote liquidité sur valeur centrale
-DECOTE_LIQ = {
-    1: 0.97,  # liq faible → −3%
-    2: 1.00,
-    3: 1.00,
-}
+DECOTE_LIQ = {1: 0.97, 2: 1.00, 3: 1.00}
 
-# ============================================================
-# COEFFICIENTS SURFACE
-# ============================================================
+
 def coeff_surface(surface, type_bien):
     if type_bien in ("appartement", "riad"):
-        if surface < 60:    return 1.05
-        if surface < 100:   return 1.00
-        if surface < 150:   return 0.97
-        if surface < 200:   return 0.94
+        if surface < 60:   return 1.05
+        if surface < 100:  return 1.00
+        if surface < 150:  return 0.97
+        if surface < 200:  return 0.94
         return 0.90
-    else:  # villa, dar
-        if surface < 150:   return 1.05
-        if surface < 250:   return 1.02
-        if surface < 400:   return 1.00
-        if surface < 600:   return 0.96
+    else:
+        if surface < 150:  return 1.05
+        if surface < 250:  return 1.02
+        if surface < 400:  return 1.00
+        if surface < 600:  return 0.96
         return 0.92
 
-# ============================================================
-# FONCTION ESTIMATION PRINCIPALE
-# ============================================================
+
 def estimer(quartier, type_bien, surface, etat, etage=1,
             equipements=None, pieces=None, anciennete=None,
             implantation=None):
@@ -257,15 +201,11 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
 
     ref = REFERENTIEL.get(quartier)
     if not ref:
-        return None, f"Quartier '{quartier}' non trouvé dans le référentiel"
+        return None, f"Quartier '{quartier}' non trouve dans le referentiel"
 
-    # Clé type de bien
     cle_map = {
-        "appartement": "appt",
-        "villa":       "villa",
-        "dar":         "dar",
-        "maison":      "dar",   # alias
-        "riad":        "riad",
+        "appartement": "appt", "villa": "villa",
+        "dar": "dar", "maison": "dar", "riad": "riad",
     }
     cle_type = cle_map.get(type_bien.lower())
     if not cle_type:
@@ -273,7 +213,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
 
     prix_m2_base = ref.get(cle_type)
 
-    # Fallback intelligent si prix absent
     if not prix_m2_base:
         if cle_type == "dar" and ref.get("appt"):
             prix_m2_base = round(ref["appt"] * 0.85)
@@ -288,28 +227,24 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
 
     liq = ref.get("liq", 2)
 
-    # Coefficients de base
     c_etat       = COEFF_ETAT.get(etat, 1.0)
-    c_etage      = COEFF_ETAGE.get(min(max(etage, -1), 10), 1.0) if type_bien in ("appartement",) else 1.0
+    c_etage      = COEFF_ETAGE.get(min(max(etage, -1), 10), 1.0) if type_bien == "appartement" else 1.0
     c_surface    = coeff_surface(surface, type_bien)
     c_anciennete = COEFF_ANCIENNETE.get(anciennete, 1.0) if anciennete else 1.0
-    c_pieces     = COEFF_PIECES.get(pieces, 1.0) if pieces and type_bien in ("appartement",) else 1.0
+    c_pieces     = COEFF_PIECES.get(pieces, 1.0) if pieces and type_bien == "appartement" else 1.0
 
-    # Implantation (villa / dar uniquement)
     c_implantation = 1.0
     if type_bien in ("villa", "dar", "maison") and implantation:
         c_implantation = COEFF_IMPLANTATION.get(implantation, 1.0)
 
-    # Équipements
     bonus = sum(BONUS_EQUIPEMENTS.get(eq, 0) for eq in equipements)
     c_equipements = 1 + bonus
 
-    # Liquidité
     c_liq_decote = DECOTE_LIQ.get(liq, 1.0)
     fourchette_low, fourchette_high = FOURCHETTE_LIQ.get(liq, (0.90, 1.10))
 
-    # Prix final
-    ["Prix m² après application des coefficients",   f"{estimation['prix_m2_ajuste']:,}
+    # FIX: variable nommee prix_m2_ajuste (pas prix_m2_marche)
+    prix_m2_ajuste = (prix_m2_base
                       * c_etat
                       * c_etage
                       * c_surface
@@ -325,31 +260,29 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
     valeur_mid = round(valeur_centrale / 1000) * 1000
 
     return {
-        "prix_m2_base":    round(prix_m2_base),
-        "prix_m2_ajuste":  round(prix_m2_ajuste),
-        "valeur_min":      valeur_min,
-        "valeur_max":      valeur_max,
-        "valeur_mid":      valeur_mid,
-        "surface":         surface,
-        "quartier":        quartier,
-        "type_bien":       type_bien,
-        "etat":            etat,
-        "liquidite":       liq,
+        "prix_m2_base":   round(prix_m2_base),
+        "prix_m2_ajuste": round(prix_m2_ajuste),
+        "valeur_min":     valeur_min,
+        "valeur_max":     valeur_max,
+        "valeur_mid":     valeur_mid,
+        "surface":        surface,
+        "quartier":       quartier,
+        "type_bien":      type_bien,
+        "etat":           etat,
+        "liquidite":      liq,
         "coefficients": {
-            "etat":          c_etat,
-            "etage":         round(c_etage, 3),
-            "surface":       round(c_surface, 3),
-            "anciennete":    round(c_anciennete, 3),
-            "pieces":        round(c_pieces, 3),
-            "implantation":  round(c_implantation, 3),
-            "equipements":   round(c_equipements, 3),
-            "liquidite":     round(c_liq_decote, 3),
+            "etat":         c_etat,
+            "etage":        round(c_etage, 3),
+            "surface":      round(c_surface, 3),
+            "anciennete":   round(c_anciennete, 3),
+            "pieces":       round(c_pieces, 3),
+            "implantation": round(c_implantation, 3),
+            "equipements":  round(c_equipements, 3),
+            "liquidite":    round(c_liq_decote, 3),
         }
     }, None
 
-# ============================================================
-# GÉNÉRATION PDF
-# ============================================================
+
 def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     buffer = io.BytesIO()
     doc = SimpleDocTemplate(buffer, pagesize=A4,
@@ -371,20 +304,20 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
 
     header_data = [[
         Paragraph("<b>PropIntel</b>", ParagraphStyle('logo', parent=styles['Normal'], fontSize=18, fontName='Helvetica-Bold', textColor=or_color)),
-        Paragraph(f"Rapport d'Estimation<br/><font size=9 color='grey'>{date_str}</font>",
+        Paragraph("Rapport d'Estimation<br/><font size=9 color='grey'>" + date_str + "</font>",
             ParagraphStyle('right', parent=styles['Normal'], fontSize=11, fontName='Helvetica', textColor=dark_color, alignment=TA_RIGHT))
     ]]
     header_table = Table(header_data, colWidths=[85*mm, 85*mm])
     header_table.setStyle(TableStyle([('VALIGN',(0,0),(-1,-1),'MIDDLE'),('BOTTOMPADDING',(0,0),(-1,-1),8)]))
     content.append(header_table)
     content.append(HRFlowable(width="100%", thickness=1, color=or_color, spaceAfter=16))
-    content.append(Paragraph("Estimation Immobilière", style_titre))
-    content.append(Paragraph("Intelligence Immobilière · Marrakech · Modèle calibré sur données réelles 2024–2026", style_sous_titre))
+    content.append(Paragraph("Estimation Immobiliere", style_titre))
+    content.append(Paragraph("Intelligence Immobiliere - Marrakech - Modele calibre sur donnees reelles 2024-2026", style_sous_titre))
 
     content.append(Paragraph("INFORMATIONS CLIENT", style_section))
     client_table = Table([
         ["Nom",       nom_client],
-        ["Téléphone", tel_client],
+        ["Telephone", tel_client],
         ["WhatsApp",  whatsapp_client],
     ], colWidths=[40*mm, 130*mm])
     client_table.setStyle(TableStyle([
@@ -395,28 +328,28 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]))
     content.append(client_table)
 
-    content.append(Paragraph("BIEN ÉVALUÉ", style_section))
+    content.append(Paragraph("BIEN EVALUE", style_section))
     type_labels = {
-        "appartement": "Appartement",
-        "villa":       "Villa",
-        "dar":         "Maison / Dar",
-        "maison":      "Maison / Dar",
-        "riad":        "Riad",
+        "appartement": "Appartement", "villa": "Villa",
+        "dar": "Maison / Dar", "maison": "Maison / Dar", "riad": "Riad",
     }
-    etat_labels = {"neuf":"Neuf","excellent":"Excellent","bon":"Bon état","moyen":"État moyen","arenoveer":"À rénover"}
-    liq_labels  = {1:"Faible","2":"Moyenne",2:"Moyenne",3:"Élevée"}
-    impl_labels = {"isolee":"Isolée","jumelee":"Jumelée","bande":"En bande"}
+    etat_labels = {"neuf":"Neuf","excellent":"Excellent","bon":"Bon etat","moyen":"Etat moyen","arenoveer":"A renover"}
+    liq_labels  = {1:"Faible", 2:"Moyenne", 3:"Elevee"}
+    impl_labels = {"isolee":"Isolee","jumelee":"Jumelee","bande":"En bande"}
     niv_labels  = {"plain_pied":"Plain-pied (RDC)","r1":"R+1","r2":"R+2","r3":"R+3 et +"}
-    ss_labels   = {"avec_ss":"Avec sous-sol aménagé","avec_ss_brut":"Avec sous-sol brut"}
+    ss_labels   = {"avec_ss":"Avec sous-sol amenage","avec_ss_brut":"Avec sous-sol brut"}
+
+    prix_base_str   = str(estimation['prix_m2_base']).replace(",", " ") + " MAD/m2"
+    prix_ajuste_str = str(estimation['prix_m2_ajuste']).replace(",", " ") + " MAD/m2"
 
     bien_rows = [
-        ["Type",             type_labels.get(estimation['type_bien'], estimation['type_bien'])],
-        ["Quartier",         estimation['quartier']],
-        ["Surface bâtie",    f"{estimation['surface']} m²"],
-        ["État général",     etat_labels.get(estimation['etat'], estimation['etat'])],
-        ["Liquidité marché", liq_labels.get(estimation['liquidite'], "—")],
-        ["Prix m² référence",f"{estimation['prix_m2_base']:,} MAD/m²".replace(","," ")],
-        ["Prix m² ajusté",   f"{estimation['prix_m2_ajuste']:,} MAD/m²".replace(","," ")],
+        ["Type",                    type_labels.get(estimation['type_bien'], estimation['type_bien'])],
+        ["Quartier",                estimation['quartier']],
+        ["Surface batie",           str(estimation['surface']) + " m2"],
+        ["Etat general",            etat_labels.get(estimation['etat'], estimation['etat'])],
+        ["Liquidite marche",        liq_labels.get(estimation['liquidite'], "")],
+        ["Prix m2 reference",       prix_base_str],
+        ["Prix m2 apres coefficients", prix_ajuste_str],
     ]
     if estimation.get('implantation'):
         bien_rows.insert(2, ["Implantation", impl_labels.get(estimation['implantation'], estimation['implantation'])])
@@ -425,7 +358,7 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     if estimation.get('sous_sol'):
         bien_rows.insert(3, ["Sous-sol", ss_labels.get(estimation['sous_sol'], estimation['sous_sol'])])
 
-    bien_table = Table(bien_rows, colWidths=[45*mm, 125*mm])
+    bien_table = Table(bien_rows, colWidths=[55*mm, 115*mm])
     bien_table.setStyle(TableStyle([
         ('FONTNAME',(0,0),(0,-1),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),9),
         ('TEXTCOLOR',(0,0),(0,-1),colors.HexColor('#374151')), ('TEXTCOLOR',(1,0),(1,-1),dark_color),
@@ -434,14 +367,19 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]))
     content.append(bien_table)
 
-    content.append(Paragraph("RÉSULTAT DE L'ESTIMATION", style_section))
+    content.append(Paragraph("RESULTAT DE L'ESTIMATION", style_section))
     content.append(Spacer(1, 6))
+
+    val_min_str = str(estimation['valeur_min']).replace(",", " ") + " MAD"
+    val_max_str = str(estimation['valeur_max']).replace(",", " ") + " MAD"
+    val_mid_str = str(estimation['valeur_mid']).replace(",", " ") + " MAD"
+
     fourchette_table = Table([[
-        Paragraph(f"<b>{estimation['valeur_min']:,} MAD</b>".replace(","," "),
+        Paragraph("<b>" + val_min_str + "</b>",
             ParagraphStyle('val', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
-        Paragraph("←  Fourchette  →",
+        Paragraph("Fourchette",
             ParagraphStyle('sep', parent=styles['Normal'], fontSize=9, fontName='Helvetica', textColor=muted_color, alignment=TA_CENTER)),
-        Paragraph(f"<b>{estimation['valeur_max']:,} MAD</b>".replace(","," "),
+        Paragraph("<b>" + val_max_str + "</b>",
             ParagraphStyle('val2', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
     ]], colWidths=[55*mm, 60*mm, 55*mm])
     fourchette_table.setStyle(TableStyle([
@@ -451,8 +389,9 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]))
     content.append(fourchette_table)
     content.append(Spacer(1, 8))
+
     mid_table = Table([[
-        Paragraph(f"Valeur centrale estimée : <b>{estimation['valeur_mid']:,} MAD</b>".replace(","," "),
+        Paragraph("Valeur centrale estimee : <b>" + val_mid_str + "</b>",
             ParagraphStyle('mid', parent=styles['Normal'], fontSize=12, fontName='Helvetica', textColor=or_color, alignment=TA_CENTER))
     ]], colWidths=[170*mm])
     mid_table.setStyle(TableStyle([
@@ -461,24 +400,24 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]))
     content.append(mid_table)
 
-    content.append(Paragraph("COEFFICIENTS APPLIQUÉS", style_section))
+    content.append(Paragraph("COEFFICIENTS APPLIQUES", style_section))
     coeffs = estimation['coefficients']
-    coeff_rows = [["Critère", "Coefficient", "Impact"]]
+    coeff_rows = [["Critere", "Coefficient", "Impact"]]
     coeff_map = [
-        ("État général",     coeffs['etat'],         "Qualité du bien"),
-        ("Étage",            coeffs['etage'],        "Position verticale"),
-        ("Surface",          coeffs['surface'],      "Dégressivité/m²"),
-        ("Ancienneté",       coeffs['anciennete'],   "Année de construction"),
-        ("Pièces",           coeffs['pieces'],       "Nombre de chambres"),
-        ("Implantation",     coeffs['implantation'], "Bande / Jumelée / Isolée"),
-        ("Équipements",      coeffs['equipements'],  "Bonus équipements"),
-        ("Liquidité marché", coeffs['liquidite'],    "Facilité de revente"),
+        ("Etat general",     coeffs['etat'],         "Qualite du bien"),
+        ("Etage",            coeffs['etage'],        "Position verticale"),
+        ("Surface",          coeffs['surface'],      "Degressivite/m2"),
+        ("Anciennete",       coeffs['anciennete'],   "Annee de construction"),
+        ("Pieces",           coeffs['pieces'],       "Nombre de chambres"),
+        ("Implantation",     coeffs['implantation'], "Bande / Jumelee / Isolee"),
+        ("Equipements",      coeffs['equipements'],  "Bonus equipements"),
+        ("Liquidite marche", coeffs['liquidite'],    "Facilite de revente"),
     ]
     for label, val, desc in coeff_map:
         if val != 1.0:
-            sign = "+" if val > 1.0 else "−"
+            sign = "+" if val > 1.0 else "-"
             pct  = abs(round((val - 1.0) * 100, 1))
-            coeff_rows.append([label, f"×{val:.3f}", f"{sign}{pct}% ({desc})"])
+            coeff_rows.append([label, "x" + str(round(val, 3)), sign + str(pct) + "% (" + desc + ")"])
     coeff_table = Table(coeff_rows, colWidths=[50*mm, 25*mm, 95*mm])
     coeff_table.setStyle(TableStyle([
         ('FONTNAME',(0,0),(-1,0),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),8),
@@ -488,109 +427,102 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]))
     content.append(coeff_table)
 
-    content.append(Paragraph("MÉTHODOLOGIE", style_section))
+    content.append(Paragraph("METHODOLOGIE", style_section))
     content.append(Paragraph(
-        "Cette estimation repose sur le référentiel de prix Yakeey (données publiques, mise à jour mars 2026) "
-        "ajusté par les coefficients terrain PropIntel v1.5.0 : état général, étage, surface, ancienneté, "
-        "pièces, implantation (bande/jumelée/isolée), équipements et liquidité du quartier. "
-        "La fourchette varie de ±8% (marchés liquides) à ±12% (périphérie), reflétant la réalité terrain.", style_body))
+        "Cette estimation repose sur le referentiel de prix Yakeey (donnees publiques, mise a jour mars 2026) "
+        "ajuste par les coefficients terrain PropIntel v1.5.1 : etat general, etage, surface, anciennete, "
+        "pieces, implantation, equipements et liquidite du quartier. "
+        "La fourchette varie de +/-8% (marches liquides) a +/-12% (peripherie), refletant la realite terrain.", style_body))
 
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#e5e7eb'), spaceBefore=16, spaceAfter=10))
     content.append(Paragraph(
-        "Pour un accompagnement personnalisé : <b>Abdeloihed Meskini</b> · "
-        "Agent Élite Yakeey · <b>contact@propintel.ma</b> · propintel.ma", style_centre))
+        "Pour un accompagnement personnalise : <b>Abdeloihed Meskini</b> - "
+        "Agent Elite Yakeey - <b>contact@propintel.ma</b> - propintel.ma", style_centre))
     content.append(Spacer(1, 8))
     content.append(Paragraph(
-        "Ce rapport est fourni à titre indicatif. PropIntel ne saurait être tenu responsable des décisions "
-        "prises sur la base de cette estimation. Une expertise notariale reste recommandée pour toute transaction.",
+        "Ce rapport est fourni a titre indicatif. PropIntel ne saurait etre tenu responsable des decisions "
+        "prises sur la base de cette estimation. Une expertise notariale reste recommandee pour toute transaction.",
         style_disclaimer))
 
     doc.build(content)
     buffer.seek(0)
     return base64.b64encode(buffer.read()).decode('utf-8')
 
-# ============================================================
-# NOTIFICATION EMAIL AGENT (Resend)
-# ============================================================
+
 def notify_agent(nom, tel, whatsapp, estimation):
     try:
-        api_key  = os.environ.get('RESEND_API_KEY', '')
+        api_key    = os.environ.get('RESEND_API_KEY', '')
         valeur_mid = estimation['valeur_mid']
         quartier   = estimation['quartier']
-        date_str   = datetime.datetime.now().strftime("%d/%m/%Y à %H:%M")
+        date_str   = datetime.datetime.now().strftime("%d/%m/%Y a %H:%M")
 
         type_labels = {"appartement":"Appartement","villa":"Villa","dar":"Maison/Dar","maison":"Maison/Dar","riad":"Riad"}
-        liq_labels  = {1:"Faible",2:"Moyenne",3:"Élevée"}
+        liq_labels  = {1:"Faible",2:"Moyenne",3:"Elevee"}
 
-        body_html = f"""
-        <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-            <div style="background:#0d1117;padding:20px 24px;text-align:center;">
-                <h1 style="color:#c9a84c;margin:0;font-size:20px;">PropIntel</h1>
-                <p style="color:#aaa;margin:4px 0 0;font-size:12px;">Nouveau lead · {date_str}</p>
-            </div>
-            <div style="padding:28px 24px;color:#333;background:#fff;">
-                <h2 style="font-size:18px;margin:0 0 20px;color:#0d1117;">Nouveau lead estimateur</h2>
-                <table style="width:100%;border-collapse:collapse;">
-                    <tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;width:140px;">Nom</td><td style="padding:10px;">{nom}</td></tr>
-                    <tr><td style="padding:10px;font-weight:bold;">Téléphone</td><td style="padding:10px;"><a href="tel:{tel}" style="color:#c9a84c;">{tel}</a></td></tr>
-                    <tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">WhatsApp</td><td style="padding:10px;"><a href="https://wa.me/{whatsapp.replace('+','').replace(' ','')}" style="color:#25D366;">💬 {whatsapp}</a></td></tr>
-                    <tr><td style="padding:10px;font-weight:bold;">Quartier</td><td style="padding:10px;">{quartier}</td></tr>
-                    <tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">Type</td><td style="padding:10px;">{type_labels.get(estimation['type_bien'], estimation['type_bien'])} · {estimation['surface']} m²</td></tr>
-                    <tr><td style="padding:10px;font-weight:bold;">État</td><td style="padding:10px;">{estimation['etat']}</td></tr>
-                    <tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">Liquidité</td><td style="padding:10px;">{liq_labels.get(estimation['liquidite'],'—')}</td></tr>
-                </table>
-                <div style="background:#0d1117;padding:16px;margin:20px 0;text-align:center;border-radius:6px;">
-                    <p style="margin:0;font-size:20px;color:#c9a84c;font-weight:bold;">{valeur_mid:,} MAD</p>
-                    <p style="margin:4px 0 0;color:#aaa;font-size:12px;">Fourchette : {estimation['valeur_min']:,} – {estimation['valeur_max']:,} MAD</p>
-                </div>
-                <p style="font-size:12px;color:#888;">Le client a téléchargé son rapport PDF. Règle des 48h : contactez-le rapidement.</p>
-            </div>
-        </div>
-        """.replace(',', ' ')
+        body_html = (
+            '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">'
+            '<div style="background:#0d1117;padding:20px 24px;text-align:center;">'
+            '<h1 style="color:#c9a84c;margin:0;font-size:20px;">PropIntel</h1>'
+            '<p style="color:#aaa;margin:4px 0 0;font-size:12px;">Nouveau lead - ' + date_str + '</p>'
+            '</div>'
+            '<div style="padding:28px 24px;color:#333;background:#fff;">'
+            '<h2 style="font-size:18px;margin:0 0 20px;color:#0d1117;">Nouveau lead estimateur</h2>'
+            '<table style="width:100%;border-collapse:collapse;">'
+            '<tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;width:140px;">Nom</td><td style="padding:10px;">' + nom + '</td></tr>'
+            '<tr><td style="padding:10px;font-weight:bold;">Telephone</td><td style="padding:10px;">' + tel + '</td></tr>'
+            '<tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">WhatsApp</td><td style="padding:10px;">' + whatsapp + '</td></tr>'
+            '<tr><td style="padding:10px;font-weight:bold;">Quartier</td><td style="padding:10px;">' + quartier + '</td></tr>'
+            '<tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">Type</td><td style="padding:10px;">' + type_labels.get(estimation['type_bien'], estimation['type_bien']) + ' - ' + str(estimation['surface']) + ' m2</td></tr>'
+            '<tr><td style="padding:10px;font-weight:bold;">Etat</td><td style="padding:10px;">' + estimation['etat'] + '</td></tr>'
+            '<tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">Liquidite</td><td style="padding:10px;">' + liq_labels.get(estimation['liquidite'], '') + '</td></tr>'
+            '</table>'
+            '<div style="background:#0d1117;padding:16px;margin:20px 0;text-align:center;border-radius:6px;">'
+            '<p style="margin:0;font-size:20px;color:#c9a84c;font-weight:bold;">' + str(valeur_mid) + ' MAD</p>'
+            '<p style="margin:4px 0 0;color:#aaa;font-size:12px;">Fourchette : ' + str(estimation['valeur_min']) + ' - ' + str(estimation['valeur_max']) + ' MAD</p>'
+            '</div>'
+            '<p style="font-size:12px;color:#888;">Le client a telecharge son rapport PDF.</p>'
+            '</div></div>'
+        )
 
         payload = {
             "from":    "PropIntel Leads <contact@propintel.ma>",
             "to":      ["contact@propintel.ma"],
-            "subject": f"Nouveau lead — {nom} · {quartier} · {valeur_mid:,} MAD".replace(',', ' '),
+            "subject": "Nouveau lead - " + nom + " - " + quartier + " - " + str(valeur_mid) + " MAD",
             "html":    body_html,
         }
         response = requests.post(
             "https://api.resend.com/emails",
-            headers={"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"},
+            headers={"Authorization": "Bearer " + api_key, "Content-Type": "application/json"},
             json=payload, timeout=30
         )
         if response.status_code in (200, 201):
-            logger.info(f"Notification agent envoyée : {nom} / {tel}")
+            logger.info("Notification agent envoyee : " + nom + " / " + tel)
         else:
-            logger.error(f"Erreur Resend: {response.status_code} {response.text}")
+            logger.error("Erreur Resend: " + str(response.status_code) + " " + response.text)
     except Exception as e:
-        logger.error(f"Erreur notification agent: {e}")
+        logger.error("Erreur notification agent: " + str(e))
 
-# ============================================================
-# TWILIO OTP
-# ============================================================
+
 def send_sms_otp(phone, code):
     from twilio.rest import Client
     client = Client(os.environ.get("TWILIO_SID"), os.environ.get("TWILIO_TOKEN"))
     client.messages.create(
-        body=f"PropIntel - Votre code de vérification : {code}",
+        body="PropIntel - Votre code de verification : " + code,
         from_=os.environ.get("TWILIO_FROM"),
         to=phone
     )
 
-# ============================================================
-# ENDPOINTS API
-# ============================================================
 
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({
         "status":       "ok",
-        "version":      "1.5.0",
+        "version":      "1.5.1",
         "quartiers":    len(REFERENTIEL),
         "otp_dev_mode": DEV_MODE,
         "date":         datetime.datetime.now().isoformat()
     })
+
 
 @app.route('/api/quartiers', methods=['GET'])
 def quartiers():
@@ -604,13 +536,14 @@ def quartiers():
     } for n, p in REFERENTIEL.items()]
     return jsonify({"quartiers": liste, "total": len(liste)})
 
+
 @app.route('/api/send-otp', methods=['POST'])
 def send_otp():
     try:
         data = request.get_json()
         tel  = data.get('tel', '').strip()
         if not tel:
-            return jsonify({"error": "Numéro de téléphone requis"}), 400
+            return jsonify({"error": "Numero de telephone requis"}), 400
 
         now     = time.time()
         expired = [k for k, v in OTP_STORE.items() if v['expires_at'] < now]
@@ -619,15 +552,15 @@ def send_otp():
 
         if DEV_MODE:
             code = DEV_CODE
-            logger.info(f"[DEV] OTP pour {tel} : {code}")
+            logger.info("[DEV] OTP pour " + tel + " : " + code)
         else:
             code = str(secrets.randbelow(900000) + 100000)
             try:
                 send_sms_otp(tel, code)
-                logger.info(f"[PROD] OTP Twilio envoyé à {tel}")
+                logger.info("[PROD] OTP Twilio envoye a " + tel)
             except Exception as e:
-                logger.error(f"Erreur Twilio: {e}")
-                return jsonify({"error": "Échec envoi SMS. Vérifiez votre numéro."}), 500
+                logger.error("Erreur Twilio: " + str(e))
+                return jsonify({"error": "Echec envoi SMS. Verifiez votre numero."}), 500
 
         OTP_STORE[tel] = {
             "code":       code,
@@ -637,12 +570,13 @@ def send_otp():
         }
         return jsonify({
             "success":  True,
-            "message":  "Code envoyé" if not DEV_MODE else "Code dev : 1234",
+            "message":  "Code envoye" if not DEV_MODE else "Code dev : 1234",
             "dev_mode": DEV_MODE
         })
     except Exception as e:
-        logger.error(f"Erreur send_otp: {e}")
+        logger.error("Erreur send_otp: " + str(e))
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/verify-otp', methods=['POST'])
 def verify_otp():
@@ -651,14 +585,14 @@ def verify_otp():
         tel   = data.get('tel', '').strip()
         code  = data.get('code', '').strip()
         if not tel or not code:
-            return jsonify({"error": "Données manquantes"}), 400
+            return jsonify({"error": "Donnees manquantes"}), 400
 
         entry = OTP_STORE.get(tel)
         if not entry:
-            return jsonify({"error": "Code expiré ou numéro non trouvé"}), 400
+            return jsonify({"error": "Code expire ou numero non trouve"}), 400
         if time.time() > entry['expires_at']:
             del OTP_STORE[tel]
-            return jsonify({"error": "Code expiré"}), 400
+            return jsonify({"error": "Code expire"}), 400
 
         entry['attempts'] = entry.get('attempts', 0) + 1
         if entry['attempts'] > 5:
@@ -670,54 +604,47 @@ def verify_otp():
         entry['verified'] = True
         return jsonify({"success": True, "verified": True})
     except Exception as e:
-        logger.error(f"Erreur verify_otp: {e}")
+        logger.error("Erreur verify_otp: " + str(e))
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/estimate', methods=['POST'])
 def estimate():
     try:
         data = request.get_json()
         if not data:
-            return jsonify({"error": "Données JSON manquantes"}), 400
+            return jsonify({"error": "Donnees JSON manquantes"}), 400
 
         for champ in ["quartier", "type_bien", "surface", "etat", "nom", "tel", "whatsapp"]:
             if not data.get(champ):
-                return jsonify({"error": f"Champ manquant : {champ}"}), 400
+                return jsonify({"error": "Champ manquant : " + champ}), 400
 
-        nom         = data["nom"].strip()
-        tel         = data["tel"].strip()
-        whatsapp    = data["whatsapp"].strip()
-        quartier    = data["quartier"]
-        type_bien   = data["type_bien"].lower()
-        surface     = float(data["surface"])
-        etat        = data["etat"].lower()
-        etage       = int(data.get("etage", 1))
-        equipements = data.get("equipements", [])
-        pieces      = data.get("pieces", None)
-        anciennete  = data.get("anciennete", None)
-        implantation= data.get("implantation", None)
-        niveaux_dar = data.get("niveaux_dar", None)
-        sous_sol    = data.get("sous_sol", None)
+        nom          = data["nom"].strip()
+        tel          = data["tel"].strip()
+        whatsapp     = data["whatsapp"].strip()
+        quartier     = data["quartier"]
+        type_bien    = data["type_bien"].lower()
+        surface      = float(data["surface"])
+        etat         = data["etat"].lower()
+        etage        = int(data.get("etage", 1))
+        equipements  = data.get("equipements", [])
+        pieces       = data.get("pieces", None)
+        anciennete   = data.get("anciennete", None)
+        implantation = data.get("implantation", None)
+        niveaux_dar  = data.get("niveaux_dar", None)
+        sous_sol     = data.get("sous_sol", None)
 
-        # Vérification OTP
         entry = OTP_STORE.get(tel)
         if not entry or not entry.get('verified'):
-            return jsonify({"error": "Téléphone non vérifié. Veuillez valider votre code OTP."}), 403
+            return jsonify({"error": "Telephone non verifie. Veuillez valider votre code OTP."}), 403
 
-        # Validations
         types_valides = ["appartement", "villa", "dar", "maison", "riad"]
         if type_bien not in types_valides:
-            return jsonify({"error": f"type_bien doit être parmi : {types_valides}"}), 400
+            return jsonify({"error": "type_bien doit etre parmi : " + str(types_valides)}), 400
         if surface <= 0 or surface > 5000:
             return jsonify({"error": "Surface invalide"}), 400
         if etat not in COEFF_ETAT:
-            return jsonify({"error": f"État invalide. Valeurs : {list(COEFF_ETAT.keys())}"}), 400
-        if implantation and implantation not in COEFF_IMPLANTATION:
-            return jsonify({"error": f"Implantation invalide. Valeurs : {list(COEFF_IMPLANTATION.keys())}"}), 400
-        if pieces and pieces not in COEFF_PIECES:
-            return jsonify({"error": f"Pièces invalide. Valeurs : {list(COEFF_PIECES.keys())}"}), 400
-        if anciennete and anciennete not in COEFF_ANCIENNETE:
-            return jsonify({"error": f"Ancienneté invalide. Valeurs : {list(COEFF_ANCIENNETE.keys())}"}), 400
+            return jsonify({"error": "Etat invalide"}), 400
 
         estimation, erreur = estimer(
             quartier, type_bien, surface, etat, etage,
@@ -726,7 +653,6 @@ def estimate():
         if erreur:
             return jsonify({"error": erreur}), 400
 
-        # Stocker implantation pour le PDF
         estimation['implantation'] = implantation
         estimation['niveaux_dar']  = niveaux_dar
         estimation['sous_sol']     = sous_sol
@@ -746,22 +672,24 @@ def estimate():
         })
 
     except Exception as e:
-        logger.error(f"Erreur estimate: {e}")
+        logger.error("Erreur estimate: " + str(e))
         return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/prix/<quartier>', methods=['GET'])
 def prix_quartier(quartier):
     ref = REFERENTIEL.get(quartier)
     if not ref:
-        return jsonify({"error": "Quartier non trouvé"}), 404
+        return jsonify({"error": "Quartier non trouve"}), 404
     return jsonify({
-        "quartier":    quartier,
-        "prix_appt":   ref["appt"],
-        "prix_villa":  ref["villa"],
-        "prix_dar":    ref["dar"],
-        "prix_riad":   ref["riad"],
-        "liquidite":   ref["liq"],
+        "quartier":   quartier,
+        "prix_appt":  ref["appt"],
+        "prix_villa": ref["villa"],
+        "prix_dar":   ref["dar"],
+        "prix_riad":  ref["riad"],
+        "liquidite":  ref["liq"],
     })
+
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5000)
