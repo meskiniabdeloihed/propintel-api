@@ -178,6 +178,20 @@ FOURCHETTE_LIQ = {
 DECOTE_LIQ = {1: 0.97, 2: 1.00, 3: 1.00}
 
 
+def normaliser_telephone(tel):
+    """Convertit un numéro marocain local en format E.164."""
+    tel = tel.strip().replace(' ', '').replace('-', '')
+    if tel.startswith('00212'):
+        tel = '+212' + tel[5:]
+    elif tel.startswith('0') and len(tel) == 10:
+        tel = '+212' + tel[1:]
+    elif tel.startswith('212') and not tel.startswith('+'):
+        tel = '+' + tel
+    elif not tel.startswith('+'):
+        tel = '+' + tel
+    return tel
+
+
 def coeff_surface(surface, type_bien):
     if type_bien in ("appartement", "riad"):
         if surface < 60:   return 1.05
@@ -243,7 +257,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
     c_liq_decote = DECOTE_LIQ.get(liq, 1.0)
     fourchette_low, fourchette_high = FOURCHETTE_LIQ.get(liq, (0.90, 1.10))
 
-    # FIX: variable nommee prix_m2_ajuste (pas prix_m2_marche)
     prix_m2_ajuste = (prix_m2_base
                       * c_etat
                       * c_etage
@@ -504,8 +517,18 @@ def notify_agent(nom, tel, whatsapp, estimation):
 
 
 def send_sms_otp(phone, code):
+    """Envoie un SMS OTP via Twilio. Accepte les noms de variables Railway courants."""
     from twilio.rest import Client
-    client = Client(os.environ.get("TWILIO_SID"), os.environ.get("TWILIO_TOKEN"))
+    # Compatibilité noms de variables Railway (TWILIO_SID ou TWILIO_ACCOUNT_SID)
+    account_sid = (
+        os.environ.get("TWILIO_ACCOUNT_SID") or
+        os.environ.get("TWILIO_SID") or ""
+    )
+    auth_token = (
+        os.environ.get("TWILIO_AUTH_TOKEN") or
+        os.environ.get("TWILIO_TOKEN") or ""
+    )
+    client = Client(account_sid, auth_token)
     client.messages.create(
         body="PropIntel - Votre code de verification : " + code,
         from_=os.environ.get("TWILIO_FROM"),
@@ -541,9 +564,12 @@ def quartiers():
 def send_otp():
     try:
         data = request.get_json()
-        tel  = data.get('tel', '').strip()
-        if not tel:
+        tel_raw = data.get('tel', '').strip()
+        if not tel_raw:
             return jsonify({"error": "Numero de telephone requis"}), 400
+
+        # Normalisation E.164
+        tel = normaliser_telephone(tel_raw)
 
         now     = time.time()
         expired = [k for k, v in OTP_STORE.items() if v['expires_at'] < now]
@@ -554,13 +580,13 @@ def send_otp():
             code = DEV_CODE
             logger.info("[DEV] OTP pour " + tel + " : " + code)
         else:
-            code = str(secrets.randbelow(900000) + 100000)
+            code = str(secrets.randbelow(9000) + 1000)  # 4 chiffres
             try:
                 send_sms_otp(tel, code)
                 logger.info("[PROD] OTP Twilio envoye a " + tel)
             except Exception as e:
                 logger.error("Erreur Twilio: " + str(e))
-                return jsonify({"error": "Echec envoi SMS. Verifiez votre numero."}), 500
+                return jsonify({"error": "Echec envoi SMS. Verifiez votre numero.", "detail": str(e)}), 500
 
         OTP_STORE[tel] = {
             "code":       code,
@@ -568,6 +594,10 @@ def send_otp():
             "verified":   False,
             "attempts":   0
         }
+        # Stocker aussi la version brute pour compatibilité verify-otp
+        if tel != tel_raw:
+            OTP_STORE[tel_raw] = OTP_STORE[tel]
+
         return jsonify({
             "success":  True,
             "message":  "Code envoye" if not DEV_MODE else "Code dev : 1234",
@@ -582,21 +612,27 @@ def send_otp():
 def verify_otp():
     try:
         data  = request.get_json()
-        tel   = data.get('tel', '').strip()
+        tel_raw = data.get('tel', '').strip()
         code  = data.get('code', '').strip()
-        if not tel or not code:
+        if not tel_raw or not code:
             return jsonify({"error": "Donnees manquantes"}), 400
 
-        entry = OTP_STORE.get(tel)
+        # Chercher avec format normalisé ou brut
+        tel_norm = normaliser_telephone(tel_raw)
+        entry = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
+        tel   = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
+
         if not entry:
             return jsonify({"error": "Code expire ou numero non trouve"}), 400
         if time.time() > entry['expires_at']:
-            del OTP_STORE[tel]
+            OTP_STORE.pop(tel, None)
+            OTP_STORE.pop(tel_raw, None)
             return jsonify({"error": "Code expire"}), 400
 
         entry['attempts'] = entry.get('attempts', 0) + 1
         if entry['attempts'] > 5:
-            del OTP_STORE[tel]
+            OTP_STORE.pop(tel, None)
+            OTP_STORE.pop(tel_raw, None)
             return jsonify({"error": "Trop de tentatives"}), 429
         if code != entry['code']:
             return jsonify({"error": "Code incorrect", "attempts_left": 5 - entry['attempts']}), 400
@@ -620,7 +656,7 @@ def estimate():
                 return jsonify({"error": "Champ manquant : " + champ}), 400
 
         nom          = data["nom"].strip()
-        tel          = data["tel"].strip()
+        tel_raw      = data["tel"].strip()
         whatsapp     = data["whatsapp"].strip()
         quartier     = data["quartier"]
         type_bien    = data["type_bien"].lower()
@@ -634,7 +670,11 @@ def estimate():
         niveaux_dar  = data.get("niveaux_dar", None)
         sous_sol     = data.get("sous_sol", None)
 
-        entry = OTP_STORE.get(tel)
+        # Vérification OTP : chercher avec format normalisé ou brut
+        tel_norm = normaliser_telephone(tel_raw)
+        entry = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
+        tel   = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
+
         if not entry or not entry.get('verified'):
             return jsonify({"error": "Telephone non verifie. Veuillez valider votre code OTP."}), 403
 
@@ -657,13 +697,14 @@ def estimate():
         estimation['niveaux_dar']  = niveaux_dar
         estimation['sous_sol']     = sous_sol
 
-        pdf_b64 = generer_pdf(estimation, nom, tel, whatsapp)
+        pdf_b64 = generer_pdf(estimation, nom, tel_raw, whatsapp)
 
-        thread = threading.Thread(target=notify_agent, args=(nom, tel, whatsapp, estimation))
+        thread = threading.Thread(target=notify_agent, args=(nom, tel_raw, whatsapp, estimation))
         thread.daemon = True
         thread.start()
 
-        del OTP_STORE[tel]
+        OTP_STORE.pop(tel, None)
+        OTP_STORE.pop(tel_raw, None)
 
         return jsonify({
             "success":    True,
