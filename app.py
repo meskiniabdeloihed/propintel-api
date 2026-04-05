@@ -759,6 +759,24 @@ def estimate():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/leads', methods=['GET'])
+def get_leads():
+    try:
+        url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads?order=date_creation.desc&limit=500"
+        key = os.environ.get("SUPABASE_KEY", "")
+        if not url or not key:
+            return jsonify({"error": "Supabase non configuré"}), 500
+        headers = {
+            "apikey":        key,
+            "Authorization": "Bearer " + key,
+        }
+        response = requests.get(url, headers=headers, timeout=10)
+        return jsonify(response.json()), response.status_code
+    except Exception as e:
+        logger.error("Erreur get_leads: " + str(e))
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/prix/<quartier>', methods=['GET'])
 def prix_quartier(quartier):
     ref = REFERENTIEL.get(quartier)
@@ -776,16 +794,3 @@ def prix_quartier(quartier):
 
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5000)
-    @app.route('/api/leads', methods=['GET'])
-def get_leads():
-    try:
-        url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads?order=date_creation.desc&limit=500"
-        key = os.environ.get("SUPABASE_KEY", "")
-        headers = {
-            "apikey": key,
-            "Authorization": "Bearer " + key,
-        }
-        response = requests.get(url, headers=headers, timeout=10)
-        return jsonify(response.json()), response.status_code
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
