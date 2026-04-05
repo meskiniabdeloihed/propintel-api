@@ -462,6 +462,43 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     return base64.b64encode(buffer.read()).decode('utf-8')
 
 
+def insert_lead_supabase(nom, tel, whatsapp, estimation):
+    """Insère le lead dans Supabase après estimation validée."""
+    try:
+        url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads"
+        key = os.environ.get("SUPABASE_KEY", "")
+        if not url or not key:
+            logger.warning("SUPABASE_URL ou SUPABASE_KEY manquant — lead non enregistré")
+            return
+        headers = {
+            "apikey":        key,
+            "Authorization": "Bearer " + key,
+            "Content-Type":  "application/json",
+            "Prefer":        "return=minimal"
+        }
+        payload = {
+            "nom":          nom,
+            "telephone":    tel,
+            "whatsapp":     whatsapp,
+            "quartier":     estimation["quartier"],
+            "type_bien":    estimation["type_bien"],
+            "surface":      estimation["surface"],
+            "valeur_mid":   estimation["valeur_mid"],
+            "valeur_min":   estimation["valeur_min"],
+            "valeur_max":   estimation["valeur_max"],
+            "statut":       "nouveau",
+            "source":       "estimateur",
+            "date_creation": datetime.datetime.now().isoformat()
+        }
+        response = requests.post(url, headers=headers, json=payload, timeout=10)
+        if response.status_code in (200, 201):
+            logger.info("Lead inseré dans Supabase : " + nom + " / " + tel)
+        else:
+            logger.error("Erreur Supabase insert: " + str(response.status_code) + " " + response.text)
+    except Exception as e:
+        logger.error("Erreur insert_lead_supabase: " + str(e))
+
+
 def notify_agent(nom, tel, whatsapp, estimation):
     try:
         api_key    = os.environ.get('RESEND_API_KEY', '')
@@ -698,6 +735,11 @@ def estimate():
         estimation['sous_sol']     = sous_sol
 
         pdf_b64 = generer_pdf(estimation, nom, tel_raw, whatsapp)
+
+        # Insert Supabase + notification agent en parallèle
+        thread_supabase = threading.Thread(target=insert_lead_supabase, args=(nom, tel_raw, whatsapp, estimation))
+        thread_supabase.daemon = True
+        thread_supabase.start()
 
         thread = threading.Thread(target=notify_agent, args=(nom, tel_raw, whatsapp, estimation))
         thread.daemon = True
