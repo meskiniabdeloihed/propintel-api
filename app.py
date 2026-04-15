@@ -553,10 +553,13 @@ def notify_agent(nom, tel, whatsapp, estimation):
         logger.error("Erreur notification agent: " + str(e))
 
 
-def send_sms_otp(phone, code):
-    """Envoie un SMS OTP via Twilio. Accepte les noms de variables Railway courants."""
+# ---------------------------------------------------------------------------
+# TWILIO VERIFY — OTP via service dédié (routage international automatique)
+# ---------------------------------------------------------------------------
+
+def _twilio_client():
+    """Retourne un client Twilio initialisé avec les credentials Railway."""
     from twilio.rest import Client
-    # Compatibilité noms de variables Railway (TWILIO_SID ou TWILIO_ACCOUNT_SID)
     account_sid = (
         os.environ.get("TWILIO_ACCOUNT_SID") or
         os.environ.get("TWILIO_SID") or ""
@@ -565,19 +568,39 @@ def send_sms_otp(phone, code):
         os.environ.get("TWILIO_AUTH_TOKEN") or
         os.environ.get("TWILIO_TOKEN") or ""
     )
-    client = Client(account_sid, auth_token)
-    client.messages.create(
-        body="PropIntel - Votre code de verification : " + code,
-        from_=os.environ.get("TWILIO_FROM"),
-        to=phone
+    return Client(account_sid, auth_token)
+
+
+def send_otp_via_verify(phone):
+    """Déclenche l'envoi OTP via Twilio Verify."""
+    verify_sid = os.environ.get("TWILIO_VERIFY_SID", "")
+    client = _twilio_client()
+    client.verify.v2.services(verify_sid).verifications.create(
+        to=phone,
+        channel="sms"
     )
 
+
+def check_otp_via_verify(phone, code):
+    """Vérifie le code OTP via Twilio Verify. Retourne True si approuvé."""
+    verify_sid = os.environ.get("TWILIO_VERIFY_SID", "")
+    client = _twilio_client()
+    result = client.verify.v2.services(verify_sid).verification_checks.create(
+        to=phone,
+        code=code
+    )
+    return result.status == "approved"
+
+
+# ---------------------------------------------------------------------------
+# ROUTES
+# ---------------------------------------------------------------------------
 
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({
         "status":       "ok",
-        "version":      "1.5.1",
+        "version":      "1.5.2",
         "quartiers":    len(REFERENTIEL),
         "otp_dev_mode": DEV_MODE,
         "date":         datetime.datetime.now().isoformat()
@@ -605,41 +628,58 @@ def send_otp():
         if not tel_raw:
             return jsonify({"error": "Numero de telephone requis"}), 400
 
-        # Normalisation E.164
         tel = normaliser_telephone(tel_raw)
 
+        # Nettoyage OTP expirés
         now     = time.time()
         expired = [k for k, v in OTP_STORE.items() if v['expires_at'] < now]
         for k in expired:
             del OTP_STORE[k]
 
         if DEV_MODE:
+            # Mode dev : code fixe 1234, pas d'envoi SMS
             code = DEV_CODE
             logger.info("[DEV] OTP pour " + tel + " : " + code)
+            OTP_STORE[tel] = {
+                "code":       code,
+                "expires_at": now + OTP_TTL,
+                "verified":   False,
+                "attempts":   0,
+                "use_verify": False
+            }
+            if tel != tel_raw:
+                OTP_STORE[tel_raw] = OTP_STORE[tel]
+            return jsonify({
+                "success":  True,
+                "message":  "Code dev : 1234",
+                "dev_mode": True
+            })
         else:
-            code = str(secrets.randbelow(9000) + 1000)  # 4 chiffres
+            # Mode prod : Twilio Verify gère l'envoi et le routage
             try:
-                send_sms_otp(tel, code)
-                logger.info("[PROD] OTP Twilio envoye a " + tel)
+                send_otp_via_verify(tel)
+                logger.info("[PROD] OTP Verify envoye a " + tel)
             except Exception as e:
-                logger.error("Erreur Twilio: " + str(e))
+                logger.error("Erreur Twilio Verify send: " + str(e))
                 return jsonify({"error": "Echec envoi SMS. Verifiez votre numero.", "detail": str(e)}), 500
 
-        OTP_STORE[tel] = {
-            "code":       code,
-            "expires_at": now + OTP_TTL,
-            "verified":   False,
-            "attempts":   0
-        }
-        # Stocker aussi la version brute pour compatibilité verify-otp
-        if tel != tel_raw:
-            OTP_STORE[tel_raw] = OTP_STORE[tel]
+            # Le code est géré côté Twilio — on stocke juste la session locale
+            OTP_STORE[tel] = {
+                "code":       None,
+                "expires_at": now + OTP_TTL,
+                "verified":   False,
+                "attempts":   0,
+                "use_verify": True
+            }
+            if tel != tel_raw:
+                OTP_STORE[tel_raw] = OTP_STORE[tel]
 
-        return jsonify({
-            "success":  True,
-            "message":  "Code envoye" if not DEV_MODE else "Code dev : 1234",
-            "dev_mode": DEV_MODE
-        })
+            return jsonify({
+                "success":  True,
+                "message":  "Code envoye",
+                "dev_mode": False
+            })
+
     except Exception as e:
         logger.error("Erreur send_otp: " + str(e))
         return jsonify({"error": str(e)}), 500
@@ -648,16 +688,15 @@ def send_otp():
 @app.route('/api/verify-otp', methods=['POST'])
 def verify_otp():
     try:
-        data  = request.get_json()
+        data    = request.get_json()
         tel_raw = data.get('tel', '').strip()
-        code  = data.get('code', '').strip()
+        code    = data.get('code', '').strip()
         if not tel_raw or not code:
             return jsonify({"error": "Donnees manquantes"}), 400
 
-        # Chercher avec format normalisé ou brut
         tel_norm = normaliser_telephone(tel_raw)
-        entry = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
-        tel   = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
+        entry    = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
+        tel      = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
 
         if not entry:
             return jsonify({"error": "Code expire ou numero non trouve"}), 400
@@ -671,11 +710,26 @@ def verify_otp():
             OTP_STORE.pop(tel, None)
             OTP_STORE.pop(tel_raw, None)
             return jsonify({"error": "Trop de tentatives"}), 429
+
+        # --- Vérification via Twilio Verify (mode prod) ---
+        if entry.get("use_verify"):
+            try:
+                approved = check_otp_via_verify(tel_norm, code)
+            except Exception as e:
+                logger.error("Erreur Twilio Verify check: " + str(e))
+                return jsonify({"error": "Erreur verification: " + str(e)}), 500
+            if not approved:
+                return jsonify({"error": "Code incorrect", "attempts_left": 5 - entry['attempts']}), 400
+            entry['verified'] = True
+            return jsonify({"success": True, "verified": True})
+
+        # --- Vérification locale (mode dev) ---
         if code != entry['code']:
             return jsonify({"error": "Code incorrect", "attempts_left": 5 - entry['attempts']}), 400
 
         entry['verified'] = True
         return jsonify({"success": True, "verified": True})
+
     except Exception as e:
         logger.error("Erreur verify_otp: " + str(e))
         return jsonify({"error": str(e)}), 500
@@ -707,10 +761,10 @@ def estimate():
         niveaux_dar  = data.get("niveaux_dar", None)
         sous_sol     = data.get("sous_sol", None)
 
-        # Vérification OTP : chercher avec format normalisé ou brut
+        # Vérification OTP
         tel_norm = normaliser_telephone(tel_raw)
-        entry = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
-        tel   = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
+        entry    = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
+        tel      = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
 
         if not entry or not entry.get('verified'):
             return jsonify({"error": "Telephone non verifie. Veuillez valider votre code OTP."}), 403
@@ -736,7 +790,6 @@ def estimate():
 
         pdf_b64 = generer_pdf(estimation, nom, tel_raw, whatsapp)
 
-        # Insert Supabase + notification agent en parallèle
         thread_supabase = threading.Thread(target=insert_lead_supabase, args=(nom, tel_raw, whatsapp, estimation))
         thread_supabase.daemon = True
         thread_supabase.start()
