@@ -165,10 +165,12 @@ COEFF_IMPLANTATION = {
 
 BONUS_EQUIPEMENTS = {
     "parking": 0.04, "ascenseur": 0.03, "piscine": 0.08,
-    "gardien": 0.02, "terrasse": 0.03, "vue": 0.05,
+    "gardien": 0.02, "terrasse": 0.03, "vue": 0.05, "belle_vue": 0.05,
     "residence_fermee": 0.05, "digicode_camera": 0.02,
     "jardin": 0.04, "terrain_sup_300": 0.03,
     "terrasse_privative": 0.06, "double_garage": 0.03,
+    # PATCH V1.5.3 : bonus Riad/Medina
+    "patio": 0.05, "hammam": 0.06, "acces_vehicule": 0.02,
 }
 
 FOURCHETTE_LIQ = {
@@ -178,8 +180,121 @@ FOURCHETTE_LIQ = {
 DECOTE_LIQ = {1: 0.97, 2: 1.00, 3: 1.00}
 
 
+# ============================================================
+# PATCH V1.5.4 - DÉCOMPOSITION VILLA BÂTI/TERRAIN (17 avril 2026)
+# ============================================================
+# Logique : pour les VILLAS, on demande emprise au sol + niveaux + terrain.
+# - Surface bâtie = emprise × (niveaux + 1)  [R=1, R+1=2, R+2=3, R+3=4]
+# - Terrain libre = surface_terrain - emprise
+# - Valeur bâti = bâti × prix_m² × coefficients
+# - Valeur terrain : décote progressive 50% (≤2000m²) puis 35% (>2000m²)
+# Déclenchement : type=villa ET surface_terrain > 600 m²
+# ============================================================
+# PATCH V1.5.3 PRÉSERVÉ pour Dar/Maison (paliers grands terrains)
+# ============================================================
+
+TYPOLOGIES_GRAND_TERRAIN = ("dar", "maison")  # Villa retiré, traitée séparément v1.5.4
+
+# Mapping niveaux : R = 1 niveau bâti, R+1 = 2 niveaux, etc.
+NIVEAUX_MAP = {
+    "r":     1,   # Plain-pied (RDC seul)
+    "r1":    2,   # R+1 (RDC + 1)
+    "r2":    3,   # R+2 (RDC + 2)
+    "r3":    4,   # R+3 (RDC + 3)
+    # Compatibilité ancien champ niveaux_dar
+    "plain_pied": 1,
+}
+
+
+def valeur_villa_decomposee(surface_terrain, emprise_au_sol, nombre_niveaux,
+                             prix_m2_base, c_global):
+    """
+    Calcule la valeur d'une villa en décomposant bâti et terrain libre.
+    
+    Args:
+        surface_terrain : superficie cadastrale totale (m²)
+        emprise_au_sol  : surface du RDC (m²)
+        nombre_niveaux  : nombre de niveaux bâtis (1=R, 2=R+1, 3=R+2, 4=R+3)
+        prix_m2_base    : prix m² villa du quartier
+        c_global        : produit des coefficients (état, anciennete, équipements, etc.)
+    
+    Returns:
+        dict avec: surface_batie, terrain_libre, valeur_bati, valeur_terrain, valeur_totale
+    """
+    SEUIL_TERRAIN = 2000   # m²
+    COEF_TERRAIN_BAS  = 0.50  # 50% pour les premiers 2000 m²
+    COEF_TERRAIN_HAUT = 0.35  # 35% au-delà
+    
+    # Surface bâtie = emprise × niveaux
+    surface_batie = emprise_au_sol * nombre_niveaux
+    
+    # Terrain libre = terrain total - emprise au sol (pas - bâtie totale!)
+    terrain_libre = max(0, surface_terrain - emprise_au_sol)
+    
+    # Valeur du bâti (prix plein du quartier × coefficients)
+    valeur_bati = surface_batie * prix_m2_base * c_global
+    
+    # Valeur du terrain libre (décote progressive)
+    if terrain_libre <= SEUIL_TERRAIN:
+        valeur_terrain = terrain_libre * prix_m2_base * COEF_TERRAIN_BAS
+    else:
+        valeur_terrain = (
+            SEUIL_TERRAIN * prix_m2_base * COEF_TERRAIN_BAS
+            + (terrain_libre - SEUIL_TERRAIN) * prix_m2_base * COEF_TERRAIN_HAUT
+        )
+    
+    valeur_totale = valeur_bati + valeur_terrain
+    
+    return {
+        "surface_batie":    surface_batie,
+        "terrain_libre":    terrain_libre,
+        "valeur_bati":      valeur_bati,
+        "valeur_terrain":   valeur_terrain,
+        "valeur_totale":    valeur_totale
+    }
+
+
+def valeur_par_paliers_grand_terrain(surface, prix_m2_base):
+    """
+    [PATCH V1.5.3 - Conservé pour Dar/Maison uniquement]
+    Calcule la valeur fonciere d'un bien a grand terrain selon 5 paliers.
+    Utilise pour dar/maison avec surface > 600 m2.
+
+    Paliers :
+      - 0 -> 600 m2     : 100% prix (bati utile)
+      - 600 -> 1000 m2  :  70% prix (parcelle standard)
+      - 1000 -> 2000 m2 :  50% prix (grande parcelle)
+      - 2000 -> 5000 m2 :  35% prix (domaine)
+      - > 5000 m2       :  25% prix (propriete exceptionnelle)
+    """
+    SEUIL_1 = 600
+    SEUIL_2 = 1000
+    SEUIL_3 = 2000
+    SEUIL_4 = 5000
+
+    COEF_1 = 1.00
+    COEF_2 = 0.70
+    COEF_3 = 0.50
+    COEF_4 = 0.35
+    COEF_5 = 0.25
+
+    valeur = 0
+    s1 = min(surface, SEUIL_1)
+    valeur += s1 * prix_m2_base * COEF_1
+    s2 = max(0, min(surface, SEUIL_2) - SEUIL_1)
+    valeur += s2 * prix_m2_base * COEF_2
+    s3 = max(0, min(surface, SEUIL_3) - SEUIL_2)
+    valeur += s3 * prix_m2_base * COEF_3
+    s4 = max(0, min(surface, SEUIL_4) - SEUIL_3)
+    valeur += s4 * prix_m2_base * COEF_4
+    s5 = max(0, surface - SEUIL_4)
+    valeur += s5 * prix_m2_base * COEF_5
+
+    return valeur
+
+
 def normaliser_telephone(tel):
-    """Convertit un numéro marocain local en format E.164."""
+    """Convertit un numero marocain local en format E.164."""
     tel = tel.strip().replace(' ', '').replace('-', '')
     if tel.startswith('00212'):
         tel = '+212' + tel[5:]
@@ -209,7 +324,15 @@ def coeff_surface(surface, type_bien):
 
 def estimer(quartier, type_bien, surface, etat, etage=1,
             equipements=None, pieces=None, anciennete=None,
-            implantation=None):
+            implantation=None,
+            surface_terrain=None, emprise_au_sol=None, nombre_niveaux=None):
+    """
+    Args:
+        ... (comme avant) ...
+        surface_terrain : (v1.5.4) superficie cadastrale totale (villa uniquement)
+        emprise_au_sol  : (v1.5.4) surface du RDC (villa uniquement)
+        nombre_niveaux  : (v1.5.4) nombre de niveaux bâtis (1=R, 2=R+1, 3=R+2, 4=R+3)
+    """
     if equipements is None:
         equipements = []
 
@@ -257,22 +380,79 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
     c_liq_decote = DECOTE_LIQ.get(liq, 1.0)
     fourchette_low, fourchette_high = FOURCHETTE_LIQ.get(liq, (0.90, 1.10))
 
-    prix_m2_ajuste = (prix_m2_base
-                      * c_etat
-                      * c_etage
-                      * c_surface
-                      * c_anciennete
-                      * c_pieces
-                      * c_implantation
-                      * c_equipements
-                      * c_liq_decote)
+    # === BRANCHEMENT TRIPLE (v1.5.4) ===
+    # 1. VILLA avec terrain+emprise+niveaux : décomposition bâti/terrain (NOUVEAU)
+    # 2. DAR/MAISON > 600m² : paliers grands terrains (PATCH V1.5.3 conservé)
+    # 3. Tous les autres cas : logique standard (inchangée)
+    
+    correction_grand_terrain_appliquee = False
+    decomposition_villa_appliquee      = False
+    valeur_brute_avant_correction      = 0
+    decomposition_details              = None
 
-    valeur_centrale = prix_m2_ajuste * surface
+    c_global = (c_etat
+                * c_etage
+                * c_anciennete
+                * c_pieces
+                * c_implantation
+                * c_equipements
+                * c_liq_decote)
+
+    # CAS 1 : VILLA v1.5.4 avec décomposition (si données fournies + terrain > 600)
+    if (type_bien == "villa"
+            and surface_terrain is not None
+            and emprise_au_sol is not None
+            and nombre_niveaux is not None
+            and float(surface_terrain) > 600):
+        
+        st = float(surface_terrain)
+        es = float(emprise_au_sol)
+        nv = int(nombre_niveaux)
+        
+        # Validation cohérence : emprise ne peut pas dépasser le terrain
+        if es > st:
+            return None, "Emprise au sol ({} m²) supérieure au terrain ({} m²)".format(es, st)
+        if nv < 1 or nv > 4:
+            return None, "Nombre de niveaux invalide (doit être entre 1 et 4)"
+        if es <= 0:
+            return None, "Emprise au sol invalide"
+        
+        decomposition_details = valeur_villa_decomposee(
+            st, es, nv, prix_m2_base, c_global
+        )
+        valeur_centrale = decomposition_details["valeur_totale"]
+        # Prix m² apparent ressorti du calcul (pour traçabilité PDF)
+        prix_m2_ajuste = valeur_centrale / surface if surface > 0 else 0
+        # Traçabilité : valeur qui aurait été donnée sans la décomposition (logique v1.5.3)
+        valeur_brute_avant_correction = prix_m2_base * c_surface * c_global * surface
+        decomposition_villa_appliquee = True
+        
+    # CAS 2 : DAR/MAISON > 600m² (paliers grands terrains, patch v1.5.3 conservé)
+    elif type_bien in TYPOLOGIES_GRAND_TERRAIN and surface > 600:
+        valeur_fonciere = valeur_par_paliers_grand_terrain(surface, prix_m2_base)
+        valeur_centrale = valeur_fonciere * c_global
+        prix_m2_ajuste = valeur_centrale / surface
+        valeur_brute_avant_correction = prix_m2_base * c_surface * c_global * surface
+        correction_grand_terrain_appliquee = True
+        
+    # CAS 3 : Logique standard (appartement, riad, dar/villa < 600m², villa sans détails)
+    else:
+        prix_m2_ajuste = (prix_m2_base
+                          * c_etat
+                          * c_etage
+                          * c_surface
+                          * c_anciennete
+                          * c_pieces
+                          * c_implantation
+                          * c_equipements
+                          * c_liq_decote)
+        valeur_centrale = prix_m2_ajuste * surface
+
     valeur_min = round(valeur_centrale * fourchette_low  / 1000) * 1000
     valeur_max = round(valeur_centrale * fourchette_high / 1000) * 1000
     valeur_mid = round(valeur_centrale / 1000) * 1000
 
-    return {
+    resultat = {
         "prix_m2_base":   round(prix_m2_base),
         "prix_m2_ajuste": round(prix_m2_ajuste),
         "valeur_min":     valeur_min,
@@ -293,7 +473,55 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
             "equipements":  round(c_equipements, 3),
             "liquidite":    round(c_liq_decote, 3),
         }
-    }, None
+    }
+
+    if correction_grand_terrain_appliquee:
+        resultat["correction_grand_terrain"] = True
+        resultat["valeur_brute_algo"] = round(valeur_brute_avant_correction / 1000) * 1000
+        resultat["decote_grand_terrain_pct"] = round(
+            (1 - valeur_centrale / valeur_brute_avant_correction) * 100, 1
+        ) if valeur_brute_avant_correction > 0 else 0.0
+        logger.info(
+            "[PATCH V1.5.3] Correction grand terrain : " + type_bien + " " +
+            str(surface) + "m2 " + quartier + " -> brut=" +
+            str(resultat['valeur_brute_algo']) + " MAD -> corrige=" +
+            str(valeur_mid) + " MAD (" + str(resultat['decote_grand_terrain_pct']) + "% decote)"
+        )
+    else:
+        resultat["correction_grand_terrain"] = False
+
+    # === V1.5.4 : Détails décomposition villa ===
+    if decomposition_villa_appliquee and decomposition_details:
+        resultat["decomposition_villa"] = True
+        resultat["surface_terrain"]     = float(surface_terrain)
+        resultat["emprise_au_sol"]      = float(emprise_au_sol)
+        resultat["nombre_niveaux"]      = int(nombre_niveaux)
+        resultat["surface_batie_calc"]  = decomposition_details["surface_batie"]
+        resultat["terrain_libre"]       = decomposition_details["terrain_libre"]
+        resultat["valeur_bati"]         = round(decomposition_details["valeur_bati"] / 1000) * 1000
+        resultat["valeur_terrain"]      = round(decomposition_details["valeur_terrain"] / 1000) * 1000
+        # Pourcentage du bâti et du terrain dans la valeur totale
+        if valeur_centrale > 0:
+            resultat["part_bati_pct"]    = round(decomposition_details["valeur_bati"] / valeur_centrale * 100, 1)
+            resultat["part_terrain_pct"] = round(decomposition_details["valeur_terrain"] / valeur_centrale * 100, 1)
+        else:
+            resultat["part_bati_pct"]    = 0.0
+            resultat["part_terrain_pct"] = 0.0
+        logger.info(
+            "[PATCH V1.5.4] Decomposition villa : terrain={}m2 emprise={}m2 niveaux={} -> "
+            "bati={}m2 ({} MAD, {}%) + terrain_libre={}m2 ({} MAD, {}%) = {} MAD".format(
+                surface_terrain, emprise_au_sol, nombre_niveaux,
+                decomposition_details["surface_batie"],
+                resultat["valeur_bati"], resultat["part_bati_pct"],
+                decomposition_details["terrain_libre"],
+                resultat["valeur_terrain"], resultat["part_terrain_pct"],
+                valeur_mid
+            )
+        )
+    else:
+        resultat["decomposition_villa"] = False
+
+    return resultat, None
 
 
 def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
@@ -413,6 +641,27 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]))
     content.append(mid_table)
 
+    # === PATCH V1.5.3 - MENTION GRAND TERRAIN SUR PDF ===
+    if estimation.get('correction_grand_terrain'):
+        content.append(Spacer(1, 8))
+        avis_table = Table([[
+            Paragraph(
+                "<b>Bien a grand terrain detecte</b> - "
+                "Pour un bien de cette taille, la valeur depend fortement de la qualite "
+                "du bati et de la repartition terrain/surface habitable. "
+                "Une expertise terrain personnalisee est fortement recommandee.",
+                ParagraphStyle('avis', parent=styles['Normal'], fontSize=9, fontName='Helvetica',
+                               textColor=colors.HexColor('#92400e'), alignment=TA_LEFT, leading=13)
+            )
+        ]], colWidths=[170*mm])
+        avis_table.setStyle(TableStyle([
+            ('BACKGROUND',(0,0),(-1,-1),colors.HexColor('#fef3c7')),
+            ('BOX',(0,0),(-1,-1),1,colors.HexColor('#f59e0b')),
+            ('TOPPADDING',(0,0),(-1,-1),10), ('BOTTOMPADDING',(0,0),(-1,-1),10),
+            ('LEFTPADDING',(0,0),(-1,-1),12), ('RIGHTPADDING',(0,0),(-1,-1),12),
+        ]))
+        content.append(avis_table)
+
     content.append(Paragraph("COEFFICIENTS APPLIQUES", style_section))
     coeffs = estimation['coefficients']
     coeff_rows = [["Critere", "Coefficient", "Impact"]]
@@ -443,8 +692,10 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     content.append(Paragraph("METHODOLOGIE", style_section))
     content.append(Paragraph(
         "Cette estimation repose sur le referentiel de prix Yakeey (donnees publiques, mise a jour mars 2026) "
-        "ajuste par les coefficients terrain PropIntel v1.5.1 : etat general, etage, surface, anciennete, "
+        "ajuste par les coefficients terrain PropIntel v1.5.3 : etat general, etage, surface, anciennete, "
         "pieces, implantation, equipements et liquidite du quartier. "
+        "Pour les biens a grand terrain (villa/dar > 600 m2), un calcul par paliers differencie le bati utile "
+        "du terrain excedentaire. "
         "La fourchette varie de +/-8% (marches liquides) a +/-12% (peripherie), refletant la realite terrain.", style_body))
 
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#e5e7eb'), spaceBefore=16, spaceAfter=10))
@@ -463,12 +714,12 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
 
 
 def insert_lead_supabase(nom, tel, whatsapp, estimation):
-    """Insère le lead dans Supabase après estimation validée."""
+    """Insere le lead dans Supabase apres estimation validee."""
     try:
         url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads"
         key = os.environ.get("SUPABASE_KEY", "")
         if not url or not key:
-            logger.warning("SUPABASE_URL ou SUPABASE_KEY manquant — lead non enregistré")
+            logger.warning("SUPABASE_URL ou SUPABASE_KEY manquant - lead non enregistre")
             return
         headers = {
             "apikey":        key,
@@ -492,7 +743,7 @@ def insert_lead_supabase(nom, tel, whatsapp, estimation):
         }
         response = requests.post(url, headers=headers, json=payload, timeout=10)
         if response.status_code in (200, 201):
-            logger.info("Lead inseré dans Supabase : " + nom + " / " + tel)
+            logger.info("Lead insere dans Supabase : " + nom + " / " + tel)
         else:
             logger.error("Erreur Supabase insert: " + str(response.status_code) + " " + response.text)
     except Exception as e:
@@ -508,6 +759,20 @@ def notify_agent(nom, tel, whatsapp, estimation):
 
         type_labels = {"appartement":"Appartement","villa":"Villa","dar":"Maison/Dar","maison":"Maison/Dar","riad":"Riad"}
         liq_labels  = {1:"Faible",2:"Moyenne",3:"Elevee"}
+
+        # === PATCH V1.5.3 - mention correction dans email agent ===
+        correction_bloc = ""
+        if estimation.get('correction_grand_terrain'):
+            correction_bloc = (
+                '<div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:12px 16px;margin:16px 0;border-radius:4px;">'
+                '<p style="margin:0;color:#92400e;font-size:13px;">'
+                '<b>&#9888; Bien a grand terrain</b> - Correction paliers appliquee : '
+                'brut algo = ' + str(estimation.get('valeur_brute_algo', 0)) + ' MAD -> '
+                'apres correction = ' + str(valeur_mid) + ' MAD '
+                '(decote ' + str(estimation.get('decote_grand_terrain_pct', 0)) + '%).'
+                '<br/>Expertise terrain fortement recommandee avant prise de mandat.'
+                '</p></div>'
+            )
 
         body_html = (
             '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">'
@@ -526,6 +791,7 @@ def notify_agent(nom, tel, whatsapp, estimation):
             '<tr><td style="padding:10px;font-weight:bold;">Etat</td><td style="padding:10px;">' + estimation['etat'] + '</td></tr>'
             '<tr style="background:#f9fafb;"><td style="padding:10px;font-weight:bold;">Liquidite</td><td style="padding:10px;">' + liq_labels.get(estimation['liquidite'], '') + '</td></tr>'
             '</table>'
+            + correction_bloc +
             '<div style="background:#0d1117;padding:16px;margin:20px 0;text-align:center;border-radius:6px;">'
             '<p style="margin:0;font-size:20px;color:#c9a84c;font-weight:bold;">' + str(valeur_mid) + ' MAD</p>'
             '<p style="margin:4px 0 0;color:#aaa;font-size:12px;">Fourchette : ' + str(estimation['valeur_min']) + ' - ' + str(estimation['valeur_max']) + ' MAD</p>'
@@ -554,11 +820,11 @@ def notify_agent(nom, tel, whatsapp, estimation):
 
 
 # ---------------------------------------------------------------------------
-# TWILIO VERIFY — OTP via service dédié (routage international automatique)
+# TWILIO VERIFY - OTP via service dedie (routage international automatique)
 # ---------------------------------------------------------------------------
 
 def _twilio_client():
-    """Retourne un client Twilio initialisé avec les credentials Railway."""
+    """Retourne un client Twilio initialise avec les credentials Railway."""
     from twilio.rest import Client
     account_sid = (
         os.environ.get("TWILIO_ACCOUNT_SID") or
@@ -572,7 +838,7 @@ def _twilio_client():
 
 
 def send_otp_via_verify(phone):
-    """Déclenche l'envoi OTP via Twilio Verify."""
+    """Declenche l'envoi OTP via Twilio Verify."""
     verify_sid = os.environ.get("TWILIO_VERIFY_SID", "")
     client = _twilio_client()
     client.verify.v2.services(verify_sid).verifications.create(
@@ -582,7 +848,7 @@ def send_otp_via_verify(phone):
 
 
 def check_otp_via_verify(phone, code):
-    """Vérifie le code OTP via Twilio Verify. Retourne True si approuvé."""
+    """Verifie le code OTP via Twilio Verify. Retourne True si approuve."""
     verify_sid = os.environ.get("TWILIO_VERIFY_SID", "")
     client = _twilio_client()
     result = client.verify.v2.services(verify_sid).verification_checks.create(
@@ -596,11 +862,35 @@ def check_otp_via_verify(phone, code):
 # ROUTES
 # ---------------------------------------------------------------------------
 
+@app.route('/api/keepalive', methods=['GET'])
+def keepalive():
+    """
+    Route ping qui maintient Supabase actif en faisant un SELECT minimal.
+    Appelée toutes les 6h par cron-job.org pour eviter la mise en pause auto.
+    """
+    try:
+        url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads?select=id&limit=1"
+        key = os.environ.get("SUPABASE_KEY", "")
+        if not url or not key:
+            return jsonify({"status": "error", "reason": "Supabase non configure"}), 500
+        headers = {"apikey": key, "Authorization": "Bearer " + key}
+        response = requests.get(url, headers=headers, timeout=10)
+        return jsonify({
+            "status":         "alive",
+            "supabase":       "reachable" if response.status_code == 200 else "error",
+            "supabase_code":  response.status_code,
+            "timestamp":      datetime.datetime.now().isoformat()
+        }), 200
+    except Exception as e:
+        logger.error("Erreur keepalive: " + str(e))
+        return jsonify({"status": "error", "detail": str(e)}), 500
+
+
 @app.route('/api/health', methods=['GET'])
 def health():
     return jsonify({
         "status":       "ok",
-        "version":      "1.5.2",
+        "version":      "1.5.4",
         "quartiers":    len(REFERENTIEL),
         "otp_dev_mode": DEV_MODE,
         "date":         datetime.datetime.now().isoformat()
@@ -630,14 +920,12 @@ def send_otp():
 
         tel = normaliser_telephone(tel_raw)
 
-        # Nettoyage OTP expirés
         now     = time.time()
         expired = [k for k, v in OTP_STORE.items() if v['expires_at'] < now]
         for k in expired:
             del OTP_STORE[k]
 
         if DEV_MODE:
-            # Mode dev : code fixe 1234, pas d'envoi SMS
             code = DEV_CODE
             logger.info("[DEV] OTP pour " + tel + " : " + code)
             OTP_STORE[tel] = {
@@ -655,7 +943,6 @@ def send_otp():
                 "dev_mode": True
             })
         else:
-            # Mode prod : Twilio Verify gère l'envoi et le routage
             try:
                 send_otp_via_verify(tel)
                 logger.info("[PROD] OTP Verify envoye a " + tel)
@@ -663,7 +950,6 @@ def send_otp():
                 logger.error("Erreur Twilio Verify send: " + str(e))
                 return jsonify({"error": "Echec envoi SMS. Verifiez votre numero.", "detail": str(e)}), 500
 
-            # Le code est géré côté Twilio — on stocke juste la session locale
             OTP_STORE[tel] = {
                 "code":       None,
                 "expires_at": now + OTP_TTL,
@@ -711,7 +997,6 @@ def verify_otp():
             OTP_STORE.pop(tel_raw, None)
             return jsonify({"error": "Trop de tentatives"}), 429
 
-        # --- Vérification via Twilio Verify (mode prod) ---
         if entry.get("use_verify"):
             try:
                 approved = check_otp_via_verify(tel_norm, code)
@@ -723,7 +1008,6 @@ def verify_otp():
             entry['verified'] = True
             return jsonify({"success": True, "verified": True})
 
-        # --- Vérification locale (mode dev) ---
         if code != entry['code']:
             return jsonify({"error": "Code incorrect", "attempts_left": 5 - entry['attempts']}), 400
 
@@ -760,8 +1044,20 @@ def estimate():
         implantation = data.get("implantation", None)
         niveaux_dar  = data.get("niveaux_dar", None)
         sous_sol     = data.get("sous_sol", None)
+        # === V1.5.4 : Décomposition villa ===
+        surface_terrain = data.get("surface_terrain", None)
+        emprise_au_sol  = data.get("emprise_au_sol", None)
+        nombre_niveaux  = data.get("nombre_niveaux", None)
+        if surface_terrain is not None:
+            try: surface_terrain = float(surface_terrain)
+            except (TypeError, ValueError): surface_terrain = None
+        if emprise_au_sol is not None:
+            try: emprise_au_sol = float(emprise_au_sol)
+            except (TypeError, ValueError): emprise_au_sol = None
+        if nombre_niveaux is not None:
+            try: nombre_niveaux = int(nombre_niveaux)
+            except (TypeError, ValueError): nombre_niveaux = None
 
-        # Vérification OTP
         tel_norm = normaliser_telephone(tel_raw)
         entry    = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
         tel      = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
@@ -772,14 +1068,18 @@ def estimate():
         types_valides = ["appartement", "villa", "dar", "maison", "riad"]
         if type_bien not in types_valides:
             return jsonify({"error": "type_bien doit etre parmi : " + str(types_valides)}), 400
-        if surface <= 0 or surface > 5000:
+        # PATCH V1.5.3 : relevement de la limite pour autoriser les grands domaines
+        if surface <= 0 or surface > 50000:
             return jsonify({"error": "Surface invalide"}), 400
         if etat not in COEFF_ETAT:
             return jsonify({"error": "Etat invalide"}), 400
 
         estimation, erreur = estimer(
             quartier, type_bien, surface, etat, etage,
-            equipements, pieces, anciennete, implantation
+            equipements, pieces, anciennete, implantation,
+            surface_terrain=surface_terrain,
+            emprise_au_sol=emprise_au_sol,
+            nombre_niveaux=nombre_niveaux
         )
         if erreur:
             return jsonify({"error": erreur}), 400
@@ -818,7 +1118,7 @@ def get_leads():
         url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads?order=date_creation.desc&limit=500"
         key = os.environ.get("SUPABASE_KEY", "")
         if not url or not key:
-            return jsonify({"error": "Supabase non configuré"}), 500
+            return jsonify({"error": "Supabase non configure"}), 500
         headers = {
             "apikey":        key,
             "Authorization": "Bearer " + key,
