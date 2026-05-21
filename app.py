@@ -1144,6 +1144,127 @@ def prix_quartier(quartier):
         "liquidite":  ref["liq"],
     })
 
-
+# Liste blanche : seules ces tables sont accessibles via l'API (securite).
+HUB_TABLES = ('leads', 'mandats', 'demandes', 'dossiers', 'commissions')
+ 
+ 
+def _hub_sb():
+    """Retourne (url_base, key) Supabase, ou (None, None) si non configure."""
+    url = os.environ.get("SUPABASE_URL", "").rstrip("/")
+    key = os.environ.get("SUPABASE_KEY", "")
+    return (url, key) if url and key else (None, None)
+ 
+ 
+def _hub_headers(extra=None):
+    """En-tetes d'authentification Supabase, avec ajouts optionnels."""
+    _, key = _hub_sb()
+    headers = {"apikey": key, "Authorization": "Bearer " + key}
+    if extra:
+        headers.update(extra)
+    return headers
+ 
+ 
+@app.route('/api/hub/<table>', methods=['GET'])
+def hub_list(table):
+    """Liste les enregistrements d'une table du hub.
+    Les filtres PostgREST passes dans l'URL sont transmis tels quels,
+    ex : /api/hub/mandats?statut=eq.Actif&order=created_at.desc
+    """
+    if table not in HUB_TABLES:
+        return jsonify({"error": "Table non autorisee : " + str(table)}), 403
+    url, key = _hub_sb()
+    if not url:
+        return jsonify({"error": "Supabase non configure"}), 500
+    try:
+        params = dict(request.args)
+        params.setdefault("order", "created_at.desc")
+        params.setdefault("limit", "1000")
+        resp = requests.get(url + "/rest/v1/" + table,
+                            headers=_hub_headers(), params=params, timeout=15)
+        return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        logger.error("Erreur hub_list " + str(table) + ": " + str(e))
+        return jsonify({"error": str(e)}), 500
+ 
+ 
+@app.route('/api/hub/<table>', methods=['POST'])
+def hub_create(table):
+    """Cree un enregistrement dans une table du hub."""
+    if table not in HUB_TABLES:
+        return jsonify({"error": "Table non autorisee : " + str(table)}), 403
+    url, key = _hub_sb()
+    if not url:
+        return jsonify({"error": "Supabase non configure"}), 500
+    try:
+        payload = request.get_json() or {}
+        resp = requests.post(
+            url + "/rest/v1/" + table,
+            headers=_hub_headers({"Content-Type": "application/json",
+                                  "Prefer": "return=representation"}),
+            json=payload, timeout=15)
+        return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        logger.error("Erreur hub_create " + str(table) + ": " + str(e))
+        return jsonify({"error": str(e)}), 500
+ 
+ 
+@app.route('/api/hub/<table>/<rec_id>', methods=['PATCH'])
+def hub_update(table, rec_id):
+    """Met a jour un enregistrement d'une table du hub par son id."""
+    if table not in HUB_TABLES:
+        return jsonify({"error": "Table non autorisee : " + str(table)}), 403
+    url, key = _hub_sb()
+    if not url:
+        return jsonify({"error": "Supabase non configure"}), 500
+    try:
+        payload = request.get_json() or {}
+        resp = requests.patch(
+            url + "/rest/v1/" + table + "?id=eq." + str(rec_id),
+            headers=_hub_headers({"Content-Type": "application/json",
+                                  "Prefer": "return=representation"}),
+            json=payload, timeout=15)
+        return jsonify(resp.json()), resp.status_code
+    except Exception as e:
+        logger.error("Erreur hub_update " + str(table) + ": " + str(e))
+        return jsonify({"error": str(e)}), 500
+ 
+ 
+@app.route('/api/hub/<table>/<rec_id>', methods=['DELETE'])
+def hub_delete(table, rec_id):
+    """Supprime un enregistrement d'une table du hub par son id."""
+    if table not in HUB_TABLES:
+        return jsonify({"error": "Table non autorisee : " + str(table)}), 403
+    url, key = _hub_sb()
+    if not url:
+        return jsonify({"error": "Supabase non configure"}), 500
+    try:
+        resp = requests.delete(
+            url + "/rest/v1/" + table + "?id=eq." + str(rec_id),
+            headers=_hub_headers({"Prefer": "return=minimal"}), timeout=15)
+        return jsonify({"success": resp.status_code in (200, 204)}), resp.status_code
+    except Exception as e:
+        logger.error("Erreur hub_delete " + str(table) + ": " + str(e))
+        return jsonify({"error": str(e)}), 500
+ 
+ 
+@app.route('/api/kpis', methods=['GET'])
+def hub_kpis():
+    """Renvoie les KPIs consolides du hub (vue v_kpis) :
+    leads actifs, leads du mois, mandats actifs, demandes en cours,
+    pipeline, commissions YTD, taux de conversion.
+    """
+    url, key = _hub_sb()
+    if not url:
+        return jsonify({"error": "Supabase non configure"}), 500
+    try:
+        resp = requests.get(url + "/rest/v1/v_kpis",
+                            headers=_hub_headers(), timeout=15)
+        data = resp.json()
+        if isinstance(data, list):
+            data = data[0] if data else {}
+        return jsonify(data), resp.status_code
+    except Exception as e:
+        logger.error("Erreur hub_kpis: " + str(e))
+        return jsonify({"error": str(e)}), 500
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5000)
