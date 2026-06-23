@@ -133,7 +133,103 @@ REFERENTIEL = {
     "Targa":                        {"appt": 9909,  "villa": 7999,  "dar": 8125,  "riad": None,  "liq": 2},
     "Zohor Targa - Zephyr":         {"appt": 6330,  "villa": 6507,  "dar": 5190,  "riad": None,  "liq": 2},
 }
+# PATCH app.py — Ajouter les 3 references (Affiche / Yakeey / DGI) a /api/estimate
+# Projet : propintel-api (Railway). 100% ADDITIF — ne change aucun calcul, n'affecte ni OTP ni leads.
+# Railway redeploie automatiquement apres le commit GitHub.
 
+# ====================================================================
+# AJOUT 1/3 — Coller ce dictionnaire JUSTE APRES la fin du dict REFERENTIEL
+# ====================================================================
+
+ANCRAGES = {
+    'Abouab Gueliz - Mabrouka': {"appt": {"a": 11538, "d": None}, "villa": {"a": 36364, "d": None}},
+    'Agdal': {"appt": {"a": 24773, "d": 14000}, "villa": {"a": 13947, "d": 11920}},
+    'Ain Iti': {"appt": {"a": 13718, "d": None}, "villa": {"a": 13000, "d": None}},
+    'Al Maaden - Ain Slim': {"villa": {"a": 58853, "d": None}},
+    'Alal El Fassi': {"appt": {"a": 9159, "d": None}},
+    'Amerchich': {"appt": {"a": 12791, "d": None}, "villa": {"a": 11814, "d": None}},
+    'Ancienne Medina - Boukar': {"appt": {"a": 11957, "d": None}},
+    'Assif': {"appt": {"a": 11700, "d": None}, "villa": {"a": 13895, "d": None}},
+    'Azzouzia': {"appt": {"a": 7821, "d": 6000}, "villa": {"a": 10814, "d": 6200}},
+    'Bab Doukkala': {"appt": {"a": 13145, "d": None}},
+    'Bab Ighli': {"villa": {"a": 13750, "d": None}},
+    'Bin Lkchali': {"appt": {"a": 5623, "d": None}},
+    'Boulvard Moulay Abdellah - Route De Safi': {"villa": {"a": 8357, "d": None}},
+    'Camps El Ghoul - Victor Hugo': {"appt": {"a": 28571, "d": None}},
+    'Chwiter': {"villa": {"a": 13694, "d": None}},
+    'Daoudiat': {"appt": {"a": 11987, "d": None}, "villa": {"a": 9898, "d": None}},
+    'Douar Iziki': {"villa": {"a": 9524, "d": None}},
+    'Gueliz': {"appt": {"a": 18750, "d": 18000}, "villa": {"a": 16750, "d": 11400}},
+    'Hay Azli': {"appt": {"a": 13962, "d": None}},
+    'Hay Charaf': {"appt": {"a": 9140, "d": None}},
+    'Hay El Bahja': {"appt": {"a": 7827, "d": None}, "villa": {"a": 7373, "d": None}},
+    'Hay Hassani': {"appt": {"a": 8261, "d": None}},
+    'Hivernage': {"appt": {"a": 21765, "d": 18000}, "villa": {"a": 42391, "d": None}},
+    'Issil': {"appt": {"a": 11000, "d": None}, "villa": {"a": 11070, "d": None}},
+    'Izdihar': {"appt": {"a": 13934, "d": None}, "villa": {"a": 23301, "d": None}},
+    'Jawhar': {"villa": {"a": 16071, "d": None}},
+    'Jenan El Ghali': {"appt": {"a": 27660, "d": None}},
+    'Jnan Aourad': {"appt": {"a": 12830, "d": None}},
+    'Koudiat Laabid': {"villa": {"a": 8261, "d": None}},
+    'Lotissement Les Palmiers': {"villa": {"a": 21950, "d": None}},
+    "M'Hamid": {"appt": {"a": 8214, "d": 6500}, "villa": {"a": 7386, "d": 6200}},
+    'Massira 1': {"appt": {"a": 8912, "d": 7000}, "villa": {"a": 5219, "d": None}},
+    'Massira 2': {"appt": {"a": 9459, "d": 7500}, "villa": {"a": 10589, "d": None}},
+    'Massira 3': {"appt": {"a": 6790, "d": 7000}, "villa": {"a": 11388, "d": 8440}},
+    'Palmeraie': {"appt": {"a": 17112, "d": 15000}, "villa": {"a": 16364, "d": 9184}},
+    'Palmeraie Extension': {"appt": {"a": 20430, "d": None}, "villa": {"a": 12746, "d": None}},
+    'Portes De Marrakech Addoha': {"appt": {"a": 7500, "d": None}, "villa": {"a": 11934, "d": None}},
+    'Prestigia': {"appt": {"a": 32157, "d": None}, "villa": {"a": 19500, "d": None}},
+    'Quartier Industriel De Sidi Ghanem': {"appt": {"a": 7857, "d": None}},
+    'Riad Essalam': {"villa": {"a": 25776, "d": None}},
+    'Rouidate - Majorelle': {"appt": {"a": 17022, "d": None}, "villa": {"a": 8362, "d": None}},
+    "Route D'Amizmiz - Cherifia": {"villa": {"a": 17925, "d": None}},
+    'Route De Casablanca': {"villa": {"a": 13889, "d": None}},
+    'Route De Fes': {"appt": {"a": 10789, "d": None}, "villa": {"a": 11771, "d": None}},
+    'Route De Fes - Atlas - Amelkis': {"villa": {"a": 14355, "d": None}},
+    'Route De Fes - Douar Tamasna': {"villa": {"a": 15762, "d": None}},
+    'Route De Fes - Oulad Jelal': {"villa": {"a": 13857, "d": None}},
+    "Route De L'Ourika (Agdal)": {"villa": {"a": 20312, "d": None}},
+    "Route De L'Ourika (Sidi Abdellah Ghiat)": {"villa": {"a": 16000, "d": None}},
+    "Route De L'Ourika (Tassoultante)": {"villa": {"a": 15505, "d": None}},
+    "Route De L'Ourika - Waky": {"appt": {"a": 34783, "d": None}, "villa": {"a": 15362, "d": None}},
+    'Route De Ouarzazate - Douar El Guern': {"appt": {"a": 19643, "d": None}},
+    'Route De Ouarzazate - Gzoula Sidi Mbarek': {"villa": {"a": 18367, "d": None}},
+    'Route De Tahanaout - Cherifia': {"villa": {"a": 16708, "d": None}},
+    'S.Y.B.A': {"villa": {"a": 6295, "d": None}},
+    'Sanaoubar': {"appt": {"a": 10658, "d": None}},
+    'Semlalia': {"appt": {"a": 15000, "d": None}, "villa": {"a": 11667, "d": None}},
+    'Sidi Abbad': {"appt": {"a": 12164, "d": None}, "villa": {"a": 14494, "d": None}},
+    'Sidi Abdellah Ghiat': {"villa": {"a": 16000, "d": None}},
+    'Sofia Targa': {"villa": {"a": 7600, "d": None}},
+    'Targa': {"appt": {"a": 11544, "d": 9000}, "villa": {"a": 13000, "d": 11400}},
+    'Zohor Targa - Zephyr': {"appt": {"a": 8077, "d": None}, "villa": {"a": 12381, "d": None}},
+}
+
+# ====================================================================
+# AJOUT 2/3 — Dans estimer(), juste APRES la ligne :   liq = ref.get("liq", 2)
+#            coller ces 4 lignes :
+# ====================================================================
+
+    # Ancrages 3 references (DGI / Yakeey) — additif, n'affecte pas le calcul
+    _anc = ANCRAGES.get(quartier, {}).get(cle_type, {}) if cle_type in ("appt", "villa") else {}
+    ref_affiche = _anc.get("a")
+    ref_dgi     = _anc.get("d")
+
+# ====================================================================
+# AJOUT 3/3 — Dans le dict resultat, juste APRES la ligne :   "liquidite":      liq,
+#            coller ces 3 lignes :
+# ====================================================================
+
+        "prix_m2_affiche": ref_affiche,
+        "prix_m2_yakeey":  round(prix_m2_base),
+        "prix_m2_dgi":     ref_dgi,
+
+# ====================================================================
+# Resultat : /api/estimate renvoie en plus, dans "estimation" :
+#   prix_m2_affiche (demande marche) / prix_m2_yakeey (base PropIntel) / prix_m2_dgi (officiel)
+# Rien d'autre ne change. Rollback Railway possible en 1 clic si besoin.
+# ====================================================================
 COEFF_ETAT = {
     "neuf":      1.15,
     "excellent": 1.10,
