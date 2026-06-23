@@ -133,14 +133,8 @@ REFERENTIEL = {
     "Targa":                        {"appt": 9909,  "villa": 7999,  "dar": 8125,  "riad": None,  "liq": 2},
     "Zohor Targa - Zephyr":         {"appt": 6330,  "villa": 6507,  "dar": 5190,  "riad": None,  "liq": 2},
 }
-# PATCH app.py — Ajouter les 3 references (Affiche / Yakeey / DGI) a /api/estimate
-# Projet : propintel-api (Railway). 100% ADDITIF — ne change aucun calcul, n'affecte ni OTP ni leads.
-# Railway redeploie automatiquement apres le commit GitHub.
 
-# ====================================================================
-# AJOUT 1/3 — Coller ce dictionnaire JUSTE APRES la fin du dict REFERENTIEL
-# ====================================================================
-
+# === Ancrages 3 references (Affiche / DGI) par quartier — additif, n'affecte aucun calcul ===
 ANCRAGES = {
     'Abouab Gueliz - Mabrouka': {"appt": {"a": 11538, "d": None}, "villa": {"a": 36364, "d": None}},
     'Agdal': {"appt": {"a": 24773, "d": 14000}, "villa": {"a": 13947, "d": 11920}},
@@ -206,30 +200,6 @@ ANCRAGES = {
     'Zohor Targa - Zephyr': {"appt": {"a": 8077, "d": None}, "villa": {"a": 12381, "d": None}},
 }
 
-# ====================================================================
-# AJOUT 2/3 — Dans estimer(), juste APRES la ligne :   liq = ref.get("liq", 2)
-#            coller ces 4 lignes :
-# ====================================================================
-
-    # Ancrages 3 references (DGI / Yakeey) — additif, n'affecte pas le calcul
-    _anc = ANCRAGES.get(quartier, {}).get(cle_type, {}) if cle_type in ("appt", "villa") else {}
-    ref_affiche = _anc.get("a")
-    ref_dgi     = _anc.get("d")
-
-# ====================================================================
-# AJOUT 3/3 — Dans le dict resultat, juste APRES la ligne :   "liquidite":      liq,
-#            coller ces 3 lignes :
-# ====================================================================
-
-        "prix_m2_affiche": ref_affiche,
-        "prix_m2_yakeey":  round(prix_m2_base),
-        "prix_m2_dgi":     ref_dgi,
-
-# ====================================================================
-# Resultat : /api/estimate renvoie en plus, dans "estimation" :
-#   prix_m2_affiche (demande marche) / prix_m2_yakeey (base PropIntel) / prix_m2_dgi (officiel)
-# Rien d'autre ne change. Rollback Railway possible en 1 clic si besoin.
-# ====================================================================
 COEFF_ETAT = {
     "neuf":      1.15,
     "excellent": 1.10,
@@ -237,100 +207,57 @@ COEFF_ETAT = {
     "moyen":     0.90,
     "arenoveer": 0.75,
 }
-
 COEFF_ETAGE = {
     -1: 0.88, 0: 0.95, 1: 1.00, 2: 1.02, 3: 1.05,
     4: 1.07, 5: 1.08, 6: 1.09, 7: 1.10, 8: 1.10, 9: 1.10, 10: 1.10,
 }
-
 COEFF_ANCIENNETE = {
     "neuf_2022_plus":  1.00,
     "recent_2015_21":  0.97,
     "moyen_2005_14":   0.93,
     "ancien_avant_05": 0.88,
 }
-
 COEFF_PIECES = {
     "studio": 0.92, "f1": 0.95, "f2": 1.00,
     "f3": 1.03, "f4": 1.06, "f5plus": 1.08,
 }
-
 COEFF_IMPLANTATION = {
     "isolee": 1.00, "jumelee": 0.93, "bande": 0.86,
 }
-
 BONUS_EQUIPEMENTS = {
     "parking": 0.04, "ascenseur": 0.03, "piscine": 0.08,
     "gardien": 0.02, "terrasse": 0.03, "vue": 0.05, "belle_vue": 0.05,
     "residence_fermee": 0.05, "digicode_camera": 0.02,
     "jardin": 0.04, "terrain_sup_300": 0.03,
     "terrasse_privative": 0.06, "double_garage": 0.03,
-    # PATCH V1.5.3 : bonus Riad/Medina
     "patio": 0.05, "hammam": 0.06, "acces_vehicule": 0.02,
 }
-
 FOURCHETTE_LIQ = {
     1: (0.88, 1.12), 2: (0.90, 1.10), 3: (0.92, 1.08),
 }
-
 DECOTE_LIQ = {1: 0.97, 2: 1.00, 3: 1.00}
 
+TYPOLOGIES_GRAND_TERRAIN = ("dar", "maison")
 
-# ============================================================
-# PATCH V1.5.4 - DÉCOMPOSITION VILLA BÂTI/TERRAIN (17 avril 2026)
-# ============================================================
-# Logique : pour les VILLAS, on demande emprise au sol + niveaux + terrain.
-# - Surface bâtie = emprise × (niveaux + 1)  [R=1, R+1=2, R+2=3, R+3=4]
-# - Terrain libre = surface_terrain - emprise
-# - Valeur bâti = bâti × prix_m² × coefficients
-# - Valeur terrain : décote progressive 50% (≤2000m²) puis 35% (>2000m²)
-# Déclenchement : type=villa ET surface_terrain > 600 m²
-# ============================================================
-# PATCH V1.5.3 PRÉSERVÉ pour Dar/Maison (paliers grands terrains)
-# ============================================================
-
-TYPOLOGIES_GRAND_TERRAIN = ("dar", "maison")  # Villa retiré, traitée séparément v1.5.4
-
-# Mapping niveaux : R = 1 niveau bâti, R+1 = 2 niveaux, etc.
 NIVEAUX_MAP = {
-    "r":     1,   # Plain-pied (RDC seul)
-    "r1":    2,   # R+1 (RDC + 1)
-    "r2":    3,   # R+2 (RDC + 2)
-    "r3":    4,   # R+3 (RDC + 3)
-    # Compatibilité ancien champ niveaux_dar
+    "r":     1,
+    "r1":    2,
+    "r2":    3,
+    "r3":    4,
     "plain_pied": 1,
 }
 
 
 def valeur_villa_decomposee(surface_terrain, emprise_au_sol, nombre_niveaux,
                              prix_m2_base, c_global):
-    """
-    Calcule la valeur d'une villa en décomposant bâti et terrain libre.
-    
-    Args:
-        surface_terrain : superficie cadastrale totale (m²)
-        emprise_au_sol  : surface du RDC (m²)
-        nombre_niveaux  : nombre de niveaux bâtis (1=R, 2=R+1, 3=R+2, 4=R+3)
-        prix_m2_base    : prix m² villa du quartier
-        c_global        : produit des coefficients (état, anciennete, équipements, etc.)
-    
-    Returns:
-        dict avec: surface_batie, terrain_libre, valeur_bati, valeur_terrain, valeur_totale
-    """
-    SEUIL_TERRAIN = 2000   # m²
-    COEF_TERRAIN_BAS  = 0.50  # 50% pour les premiers 2000 m²
-    COEF_TERRAIN_HAUT = 0.35  # 35% au-delà
-    
-    # Surface bâtie = emprise × niveaux
+    SEUIL_TERRAIN = 2000
+    COEF_TERRAIN_BAS  = 0.50
+    COEF_TERRAIN_HAUT = 0.35
+
     surface_batie = emprise_au_sol * nombre_niveaux
-    
-    # Terrain libre = terrain total - emprise au sol (pas - bâtie totale!)
     terrain_libre = max(0, surface_terrain - emprise_au_sol)
-    
-    # Valeur du bâti (prix plein du quartier × coefficients)
     valeur_bati = surface_batie * prix_m2_base * c_global
-    
-    # Valeur du terrain libre (décote progressive)
+
     if terrain_libre <= SEUIL_TERRAIN:
         valeur_terrain = terrain_libre * prix_m2_base * COEF_TERRAIN_BAS
     else:
@@ -338,9 +265,9 @@ def valeur_villa_decomposee(surface_terrain, emprise_au_sol, nombre_niveaux,
             SEUIL_TERRAIN * prix_m2_base * COEF_TERRAIN_BAS
             + (terrain_libre - SEUIL_TERRAIN) * prix_m2_base * COEF_TERRAIN_HAUT
         )
-    
+
     valeur_totale = valeur_bati + valeur_terrain
-    
+
     return {
         "surface_batie":    surface_batie,
         "terrain_libre":    terrain_libre,
@@ -351,29 +278,15 @@ def valeur_villa_decomposee(surface_terrain, emprise_au_sol, nombre_niveaux,
 
 
 def valeur_par_paliers_grand_terrain(surface, prix_m2_base):
-    """
-    [PATCH V1.5.3 - Conservé pour Dar/Maison uniquement]
-    Calcule la valeur fonciere d'un bien a grand terrain selon 5 paliers.
-    Utilise pour dar/maison avec surface > 600 m2.
-
-    Paliers :
-      - 0 -> 600 m2     : 100% prix (bati utile)
-      - 600 -> 1000 m2  :  70% prix (parcelle standard)
-      - 1000 -> 2000 m2 :  50% prix (grande parcelle)
-      - 2000 -> 5000 m2 :  35% prix (domaine)
-      - > 5000 m2       :  25% prix (propriete exceptionnelle)
-    """
     SEUIL_1 = 600
     SEUIL_2 = 1000
     SEUIL_3 = 2000
     SEUIL_4 = 5000
-
     COEF_1 = 1.00
     COEF_2 = 0.70
     COEF_3 = 0.50
     COEF_4 = 0.35
     COEF_5 = 0.25
-
     valeur = 0
     s1 = min(surface, SEUIL_1)
     valeur += s1 * prix_m2_base * COEF_1
@@ -385,12 +298,10 @@ def valeur_par_paliers_grand_terrain(surface, prix_m2_base):
     valeur += s4 * prix_m2_base * COEF_4
     s5 = max(0, surface - SEUIL_4)
     valeur += s5 * prix_m2_base * COEF_5
-
     return valeur
 
 
 def normaliser_telephone(tel):
-    """Convertit un numero marocain local en format E.164."""
     tel = tel.strip().replace(' ', '').replace('-', '')
     if tel.startswith('00212'):
         tel = '+212' + tel[5:]
@@ -422,13 +333,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
             equipements=None, pieces=None, anciennete=None,
             implantation=None,
             surface_terrain=None, emprise_au_sol=None, nombre_niveaux=None):
-    """
-    Args:
-        ... (comme avant) ...
-        surface_terrain : (v1.5.4) superficie cadastrale totale (villa uniquement)
-        emprise_au_sol  : (v1.5.4) surface du RDC (villa uniquement)
-        nombre_niveaux  : (v1.5.4) nombre de niveaux bâtis (1=R, 2=R+1, 3=R+2, 4=R+3)
-    """
     if equipements is None:
         equipements = []
 
@@ -460,6 +364,11 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
 
     liq = ref.get("liq", 2)
 
+    # === Ancrages 3 references (Affiche / DGI) — additif, n'affecte pas le calcul ===
+    _anc = ANCRAGES.get(quartier, {}).get(cle_type, {}) if cle_type in ("appt", "villa") else {}
+    ref_affiche = _anc.get("a")
+    ref_dgi     = _anc.get("d")
+
     c_etat       = COEFF_ETAT.get(etat, 1.0)
     c_etage      = COEFF_ETAGE.get(min(max(etage, -1), 10), 1.0) if type_bien == "appartement" else 1.0
     c_surface    = coeff_surface(surface, type_bien)
@@ -476,11 +385,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
     c_liq_decote = DECOTE_LIQ.get(liq, 1.0)
     fourchette_low, fourchette_high = FOURCHETTE_LIQ.get(liq, (0.90, 1.10))
 
-    # === BRANCHEMENT TRIPLE (v1.5.4) ===
-    # 1. VILLA avec terrain+emprise+niveaux : décomposition bâti/terrain (NOUVEAU)
-    # 2. DAR/MAISON > 600m² : paliers grands terrains (PATCH V1.5.3 conservé)
-    # 3. Tous les autres cas : logique standard (inchangée)
-    
     correction_grand_terrain_appliquee = False
     decomposition_villa_appliquee      = False
     valeur_brute_avant_correction      = 0
@@ -494,44 +398,38 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
                 * c_equipements
                 * c_liq_decote)
 
-    # CAS 1 : VILLA v1.5.4 avec décomposition (si données fournies + terrain > 600)
     if (type_bien == "villa"
             and surface_terrain is not None
             and emprise_au_sol is not None
             and nombre_niveaux is not None
             and float(surface_terrain) > 600):
-        
+
         st = float(surface_terrain)
         es = float(emprise_au_sol)
         nv = int(nombre_niveaux)
-        
-        # Validation cohérence : emprise ne peut pas dépasser le terrain
+
         if es > st:
-            return None, "Emprise au sol ({} m²) supérieure au terrain ({} m²)".format(es, st)
+            return None, "Emprise au sol ({} m2) superieure au terrain ({} m2)".format(es, st)
         if nv < 1 or nv > 4:
-            return None, "Nombre de niveaux invalide (doit être entre 1 et 4)"
+            return None, "Nombre de niveaux invalide (doit etre entre 1 et 4)"
         if es <= 0:
             return None, "Emprise au sol invalide"
-        
+
         decomposition_details = valeur_villa_decomposee(
             st, es, nv, prix_m2_base, c_global
         )
         valeur_centrale = decomposition_details["valeur_totale"]
-        # Prix m² apparent ressorti du calcul (pour traçabilité PDF)
         prix_m2_ajuste = valeur_centrale / surface if surface > 0 else 0
-        # Traçabilité : valeur qui aurait été donnée sans la décomposition (logique v1.5.3)
         valeur_brute_avant_correction = prix_m2_base * c_surface * c_global * surface
         decomposition_villa_appliquee = True
-        
-    # CAS 2 : DAR/MAISON > 600m² (paliers grands terrains, patch v1.5.3 conservé)
+
     elif type_bien in TYPOLOGIES_GRAND_TERRAIN and surface > 600:
         valeur_fonciere = valeur_par_paliers_grand_terrain(surface, prix_m2_base)
         valeur_centrale = valeur_fonciere * c_global
         prix_m2_ajuste = valeur_centrale / surface
         valeur_brute_avant_correction = prix_m2_base * c_surface * c_global * surface
         correction_grand_terrain_appliquee = True
-        
-    # CAS 3 : Logique standard (appartement, riad, dar/villa < 600m², villa sans détails)
+
     else:
         prix_m2_ajuste = (prix_m2_base
                           * c_etat
@@ -559,6 +457,9 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
         "type_bien":      type_bien,
         "etat":           etat,
         "liquidite":      liq,
+        "prix_m2_affiche": ref_affiche,
+        "prix_m2_yakeey":  round(prix_m2_base),
+        "prix_m2_dgi":     ref_dgi,
         "coefficients": {
             "etat":         c_etat,
             "etage":        round(c_etage, 3),
@@ -586,7 +487,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
     else:
         resultat["correction_grand_terrain"] = False
 
-    # === V1.5.4 : Détails décomposition villa ===
     if decomposition_villa_appliquee and decomposition_details:
         resultat["decomposition_villa"] = True
         resultat["surface_terrain"]     = float(surface_terrain)
@@ -596,7 +496,6 @@ def estimer(quartier, type_bien, surface, etat, etage=1,
         resultat["terrain_libre"]       = decomposition_details["terrain_libre"]
         resultat["valeur_bati"]         = round(decomposition_details["valeur_bati"] / 1000) * 1000
         resultat["valeur_terrain"]      = round(decomposition_details["valeur_terrain"] / 1000) * 1000
-        # Pourcentage du bâti et du terrain dans la valeur totale
         if valeur_centrale > 0:
             resultat["part_bati_pct"]    = round(decomposition_details["valeur_bati"] / valeur_centrale * 100, 1)
             resultat["part_terrain_pct"] = round(decomposition_details["valeur_terrain"] / valeur_centrale * 100, 1)
@@ -628,17 +527,14 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     or_color    = colors.HexColor('#c9a84c')
     dark_color  = colors.HexColor('#0d1117')
     muted_color = colors.HexColor('#6b7280')
-
     style_titre      = ParagraphStyle('titre',      parent=styles['Normal'], fontSize=22, fontName='Helvetica-Bold', textColor=dark_color, spaceAfter=4,  alignment=TA_LEFT)
     style_sous_titre = ParagraphStyle('sous_titre', parent=styles['Normal'], fontSize=11, fontName='Helvetica',      textColor=muted_color, spaceAfter=16, alignment=TA_LEFT)
     style_section    = ParagraphStyle('section',    parent=styles['Normal'], fontSize=9,  fontName='Helvetica-Bold', textColor=or_color,    spaceBefore=14, spaceAfter=6, alignment=TA_LEFT)
     style_body       = ParagraphStyle('body',       parent=styles['Normal'], fontSize=10, fontName='Helvetica',      textColor=dark_color,  spaceAfter=4,  leading=16)
     style_disclaimer = ParagraphStyle('disclaimer', parent=styles['Normal'], fontSize=8,  fontName='Helvetica',      textColor=muted_color, spaceAfter=4,  leading=12)
     style_centre     = ParagraphStyle('centre',     parent=styles['Normal'], fontSize=10, fontName='Helvetica',      textColor=dark_color,  alignment=TA_CENTER)
-
     content = []
     date_str = datetime.datetime.now().strftime("%d/%m/%Y")
-
     header_data = [[
         Paragraph("<b>PropIntel</b>", ParagraphStyle('logo', parent=styles['Normal'], fontSize=18, fontName='Helvetica-Bold', textColor=or_color)),
         Paragraph("Rapport d'Estimation<br/><font size=9 color='grey'>" + date_str + "</font>",
@@ -650,7 +546,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     content.append(HRFlowable(width="100%", thickness=1, color=or_color, spaceAfter=16))
     content.append(Paragraph("Estimation Immobiliere", style_titre))
     content.append(Paragraph("Intelligence Immobiliere - Marrakech - Modele calibre sur donnees reelles 2024-2026", style_sous_titre))
-
     content.append(Paragraph("INFORMATIONS CLIENT", style_section))
     client_table = Table([
         ["Nom",       nom_client],
@@ -664,7 +559,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
         ('TOPPADDING',(0,0),(-1,-1),6), ('BOTTOMPADDING',(0,0),(-1,-1),6), ('LEFTPADDING',(0,0),(-1,-1),8),
     ]))
     content.append(client_table)
-
     content.append(Paragraph("BIEN EVALUE", style_section))
     type_labels = {
         "appartement": "Appartement", "villa": "Villa",
@@ -675,10 +569,8 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     impl_labels = {"isolee":"Isolee","jumelee":"Jumelee","bande":"En bande"}
     niv_labels  = {"plain_pied":"Plain-pied (RDC)","r1":"R+1","r2":"R+2","r3":"R+3 et +"}
     ss_labels   = {"avec_ss":"Avec sous-sol amenage","avec_ss_brut":"Avec sous-sol brut"}
-
     prix_base_str   = str(estimation['prix_m2_base']).replace(",", " ") + " MAD/m2"
     prix_ajuste_str = str(estimation['prix_m2_ajuste']).replace(",", " ") + " MAD/m2"
-
     bien_rows = [
         ["Type",                    type_labels.get(estimation['type_bien'], estimation['type_bien'])],
         ["Quartier",                estimation['quartier']],
@@ -694,7 +586,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
         bien_rows.insert(3, ["Niveaux", niv_labels.get(estimation['niveaux_dar'], estimation['niveaux_dar'])])
     if estimation.get('sous_sol'):
         bien_rows.insert(3, ["Sous-sol", ss_labels.get(estimation['sous_sol'], estimation['sous_sol'])])
-
     bien_table = Table(bien_rows, colWidths=[55*mm, 115*mm])
     bien_table.setStyle(TableStyle([
         ('FONTNAME',(0,0),(0,-1),'Helvetica-Bold'), ('FONTSIZE',(0,0),(-1,-1),9),
@@ -703,14 +594,11 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
         ('TOPPADDING',(0,0),(-1,-1),6), ('BOTTOMPADDING',(0,0),(-1,-1),6), ('LEFTPADDING',(0,0),(-1,-1),8),
     ]))
     content.append(bien_table)
-
     content.append(Paragraph("RESULTAT DE L'ESTIMATION", style_section))
     content.append(Spacer(1, 6))
-
     val_min_str = str(estimation['valeur_min']).replace(",", " ") + " MAD"
     val_max_str = str(estimation['valeur_max']).replace(",", " ") + " MAD"
     val_mid_str = str(estimation['valeur_mid']).replace(",", " ") + " MAD"
-
     fourchette_table = Table([[
         Paragraph("<b>" + val_min_str + "</b>",
             ParagraphStyle('val', parent=styles['Normal'], fontSize=14, fontName='Helvetica-Bold', textColor=dark_color, alignment=TA_CENTER)),
@@ -726,7 +614,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
     ]))
     content.append(fourchette_table)
     content.append(Spacer(1, 8))
-
     mid_table = Table([[
         Paragraph("Valeur centrale estimee : <b>" + val_mid_str + "</b>",
             ParagraphStyle('mid', parent=styles['Normal'], fontSize=12, fontName='Helvetica', textColor=or_color, alignment=TA_CENTER))
@@ -736,8 +623,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
         ('TOPPADDING',(0,0),(-1,-1),10), ('BOTTOMPADDING',(0,0),(-1,-1),10),
     ]))
     content.append(mid_table)
-
-    # === PATCH V1.5.3 - MENTION GRAND TERRAIN SUR PDF ===
     if estimation.get('correction_grand_terrain'):
         content.append(Spacer(1, 8))
         avis_table = Table([[
@@ -757,7 +642,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
             ('LEFTPADDING',(0,0),(-1,-1),12), ('RIGHTPADDING',(0,0),(-1,-1),12),
         ]))
         content.append(avis_table)
-
     content.append(Paragraph("COEFFICIENTS APPLIQUES", style_section))
     coeffs = estimation['coefficients']
     coeff_rows = [["Critere", "Coefficient", "Impact"]]
@@ -784,7 +668,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
         ('TOPPADDING',(0,0),(-1,-1),5), ('BOTTOMPADDING',(0,0),(-1,-1),5), ('LEFTPADDING',(0,0),(-1,-1),8),
     ]))
     content.append(coeff_table)
-
     content.append(Paragraph("METHODOLOGIE", style_section))
     content.append(Paragraph(
         "Cette estimation repose sur le referentiel de prix Yakeey (donnees publiques, mise a jour mars 2026) "
@@ -793,7 +676,6 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
         "Pour les biens a grand terrain (villa/dar > 600 m2), un calcul par paliers differencie le bati utile "
         "du terrain excedentaire. "
         "La fourchette varie de +/-8% (marches liquides) a +/-12% (peripherie), refletant la realite terrain.", style_body))
-
     content.append(HRFlowable(width="100%", thickness=0.5, color=colors.HexColor('#e5e7eb'), spaceBefore=16, spaceAfter=10))
     content.append(Paragraph(
         "Pour un accompagnement personnalise : <b>Abdeloihed Meskini</b> - "
@@ -803,14 +685,12 @@ def generer_pdf(estimation, nom_client, tel_client, whatsapp_client):
         "Ce rapport est fourni a titre indicatif. PropIntel ne saurait etre tenu responsable des decisions "
         "prises sur la base de cette estimation. Une expertise notariale reste recommandee pour toute transaction.",
         style_disclaimer))
-
     doc.build(content)
     buffer.seek(0)
     return base64.b64encode(buffer.read()).decode('utf-8')
 
 
 def insert_lead_supabase(nom, tel, whatsapp, estimation):
-    """Insere le lead dans Supabase apres estimation validee."""
     try:
         url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads"
         key = os.environ.get("SUPABASE_KEY", "")
@@ -852,11 +732,8 @@ def notify_agent(nom, tel, whatsapp, estimation):
         valeur_mid = estimation['valeur_mid']
         quartier   = estimation['quartier']
         date_str   = datetime.datetime.now().strftime("%d/%m/%Y a %H:%M")
-
         type_labels = {"appartement":"Appartement","villa":"Villa","dar":"Maison/Dar","maison":"Maison/Dar","riad":"Riad"}
         liq_labels  = {1:"Faible",2:"Moyenne",3:"Elevee"}
-
-        # === PATCH V1.5.3 - mention correction dans email agent ===
         correction_bloc = ""
         if estimation.get('correction_grand_terrain'):
             correction_bloc = (
@@ -869,7 +746,6 @@ def notify_agent(nom, tel, whatsapp, estimation):
                 '<br/>Expertise terrain fortement recommandee avant prise de mandat.'
                 '</p></div>'
             )
-
         body_html = (
             '<div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">'
             '<div style="background:#0d1117;padding:20px 24px;text-align:center;">'
@@ -895,7 +771,6 @@ def notify_agent(nom, tel, whatsapp, estimation):
             '<p style="font-size:12px;color:#888;">Le client a telecharge son rapport PDF.</p>'
             '</div></div>'
         )
-
         payload = {
             "from":    "PropIntel Leads <contact@propintel.ma>",
             "to":      ["contact@propintel.ma"],
@@ -915,12 +790,7 @@ def notify_agent(nom, tel, whatsapp, estimation):
         logger.error("Erreur notification agent: " + str(e))
 
 
-# ---------------------------------------------------------------------------
-# TWILIO VERIFY - OTP via service dedie (routage international automatique)
-# ---------------------------------------------------------------------------
-
 def _twilio_client():
-    """Retourne un client Twilio initialise avec les credentials Railway."""
     from twilio.rest import Client
     account_sid = (
         os.environ.get("TWILIO_ACCOUNT_SID") or
@@ -934,7 +804,6 @@ def _twilio_client():
 
 
 def send_otp_via_verify(phone):
-    """Declenche l'envoi OTP via Twilio Verify."""
     verify_sid = os.environ.get("TWILIO_VERIFY_SID", "")
     client = _twilio_client()
     client.verify.v2.services(verify_sid).verifications.create(
@@ -944,7 +813,6 @@ def send_otp_via_verify(phone):
 
 
 def check_otp_via_verify(phone, code):
-    """Verifie le code OTP via Twilio Verify. Retourne True si approuve."""
     verify_sid = os.environ.get("TWILIO_VERIFY_SID", "")
     client = _twilio_client()
     result = client.verify.v2.services(verify_sid).verification_checks.create(
@@ -954,16 +822,8 @@ def check_otp_via_verify(phone, code):
     return result.status == "approved"
 
 
-# ---------------------------------------------------------------------------
-# ROUTES
-# ---------------------------------------------------------------------------
-
 @app.route('/api/keepalive', methods=['GET'])
 def keepalive():
-    """
-    Route ping qui maintient Supabase actif en faisant un SELECT minimal.
-    Appelée toutes les 6h par cron-job.org pour eviter la mise en pause auto.
-    """
     try:
         url = os.environ.get("SUPABASE_URL", "").rstrip("/") + "/rest/v1/leads?select=id&limit=1"
         key = os.environ.get("SUPABASE_KEY", "")
@@ -1013,14 +873,11 @@ def send_otp():
         tel_raw = data.get('tel', '').strip()
         if not tel_raw:
             return jsonify({"error": "Numero de telephone requis"}), 400
-
         tel = normaliser_telephone(tel_raw)
-
         now     = time.time()
         expired = [k for k, v in OTP_STORE.items() if v['expires_at'] < now]
         for k in expired:
             del OTP_STORE[k]
-
         if DEV_MODE:
             code = DEV_CODE
             logger.info("[DEV] OTP pour " + tel + " : " + code)
@@ -1045,7 +902,6 @@ def send_otp():
             except Exception as e:
                 logger.error("Erreur Twilio Verify send: " + str(e))
                 return jsonify({"error": "Echec envoi SMS. Verifiez votre numero.", "detail": str(e)}), 500
-
             OTP_STORE[tel] = {
                 "code":       None,
                 "expires_at": now + OTP_TTL,
@@ -1055,13 +911,11 @@ def send_otp():
             }
             if tel != tel_raw:
                 OTP_STORE[tel_raw] = OTP_STORE[tel]
-
             return jsonify({
                 "success":  True,
                 "message":  "Code envoye",
                 "dev_mode": False
             })
-
     except Exception as e:
         logger.error("Erreur send_otp: " + str(e))
         return jsonify({"error": str(e)}), 500
@@ -1075,24 +929,20 @@ def verify_otp():
         code    = data.get('code', '').strip()
         if not tel_raw or not code:
             return jsonify({"error": "Donnees manquantes"}), 400
-
         tel_norm = normaliser_telephone(tel_raw)
         entry    = OTP_STORE.get(tel_norm) or OTP_STORE.get(tel_raw)
         tel      = tel_norm if OTP_STORE.get(tel_norm) else tel_raw
-
         if not entry:
             return jsonify({"error": "Code expire ou numero non trouve"}), 400
         if time.time() > entry['expires_at']:
             OTP_STORE.pop(tel, None)
             OTP_STORE.pop(tel_raw, None)
             return jsonify({"error": "Code expire"}), 400
-
         entry['attempts'] = entry.get('attempts', 0) + 1
         if entry['attempts'] > 5:
             OTP_STORE.pop(tel, None)
             OTP_STORE.pop(tel_raw, None)
             return jsonify({"error": "Trop de tentatives"}), 429
-
         if entry.get("use_verify"):
             try:
                 approved = check_otp_via_verify(tel_norm, code)
@@ -1103,13 +953,10 @@ def verify_otp():
                 return jsonify({"error": "Code incorrect", "attempts_left": 5 - entry['attempts']}), 400
             entry['verified'] = True
             return jsonify({"success": True, "verified": True})
-
         if code != entry['code']:
             return jsonify({"error": "Code incorrect", "attempts_left": 5 - entry['attempts']}), 400
-
         entry['verified'] = True
         return jsonify({"success": True, "verified": True})
-
     except Exception as e:
         logger.error("Erreur verify_otp: " + str(e))
         return jsonify({"error": str(e)}), 500
@@ -1121,11 +968,9 @@ def estimate():
         data = request.get_json()
         if not data:
             return jsonify({"error": "Donnees JSON manquantes"}), 400
-
         for champ in ["quartier", "type_bien", "surface", "etat", "nom", "tel", "whatsapp"]:
             if not data.get(champ):
                 return jsonify({"error": "Champ manquant : " + champ}), 400
-
         nom          = data["nom"].strip()
         tel_raw      = data["tel"].strip()
         whatsapp     = data["whatsapp"].strip()
@@ -1140,7 +985,6 @@ def estimate():
         implantation = data.get("implantation", None)
         niveaux_dar  = data.get("niveaux_dar", None)
         sous_sol     = data.get("sous_sol", None)
-        # === V1.5.4 : Décomposition villa ===
         surface_terrain = data.get("surface_terrain", None)
         emprise_au_sol  = data.get("emprise_au_sol", None)
         nombre_niveaux  = data.get("nombre_niveaux", None)
@@ -1164,7 +1008,6 @@ def estimate():
         types_valides = ["appartement", "villa", "dar", "maison", "riad"]
         if type_bien not in types_valides:
             return jsonify({"error": "type_bien doit etre parmi : " + str(types_valides)}), 400
-        # PATCH V1.5.3 : relevement de la limite pour autoriser les grands domaines
         if surface <= 0 or surface > 50000:
             return jsonify({"error": "Surface invalide"}), 400
         if etat not in COEFF_ETAT:
@@ -1240,32 +1083,26 @@ def prix_quartier(quartier):
         "liquidite":  ref["liq"],
     })
 
-# Liste blanche : seules ces tables sont accessibles via l'API (securite).
+
 HUB_TABLES = ('leads', 'mandats', 'demandes', 'dossiers', 'commissions')
- 
- 
+
+
 def _hub_sb():
-    """Retourne (url_base, key) Supabase, ou (None, None) si non configure."""
     url = os.environ.get("SUPABASE_URL", "").rstrip("/")
     key = os.environ.get("SUPABASE_KEY", "")
     return (url, key) if url and key else (None, None)
- 
- 
+
+
 def _hub_headers(extra=None):
-    """En-tetes d'authentification Supabase, avec ajouts optionnels."""
     _, key = _hub_sb()
     headers = {"apikey": key, "Authorization": "Bearer " + key}
     if extra:
         headers.update(extra)
     return headers
- 
- 
+
+
 @app.route('/api/hub/<table>', methods=['GET'])
 def hub_list(table):
-    """Liste les enregistrements d'une table du hub.
-    Les filtres PostgREST passes dans l'URL sont transmis tels quels,
-    ex : /api/hub/mandats?statut=eq.Actif&order=created_at.desc
-    """
     if table not in HUB_TABLES:
         return jsonify({"error": "Table non autorisee : " + str(table)}), 403
     url, key = _hub_sb()
@@ -1281,11 +1118,10 @@ def hub_list(table):
     except Exception as e:
         logger.error("Erreur hub_list " + str(table) + ": " + str(e))
         return jsonify({"error": str(e)}), 500
- 
- 
+
+
 @app.route('/api/hub/<table>', methods=['POST'])
 def hub_create(table):
-    """Cree un enregistrement dans une table du hub."""
     if table not in HUB_TABLES:
         return jsonify({"error": "Table non autorisee : " + str(table)}), 403
     url, key = _hub_sb()
@@ -1302,11 +1138,10 @@ def hub_create(table):
     except Exception as e:
         logger.error("Erreur hub_create " + str(table) + ": " + str(e))
         return jsonify({"error": str(e)}), 500
- 
- 
+
+
 @app.route('/api/hub/<table>/<rec_id>', methods=['PATCH'])
 def hub_update(table, rec_id):
-    """Met a jour un enregistrement d'une table du hub par son id."""
     if table not in HUB_TABLES:
         return jsonify({"error": "Table non autorisee : " + str(table)}), 403
     url, key = _hub_sb()
@@ -1323,11 +1158,10 @@ def hub_update(table, rec_id):
     except Exception as e:
         logger.error("Erreur hub_update " + str(table) + ": " + str(e))
         return jsonify({"error": str(e)}), 500
- 
- 
+
+
 @app.route('/api/hub/<table>/<rec_id>', methods=['DELETE'])
 def hub_delete(table, rec_id):
-    """Supprime un enregistrement d'une table du hub par son id."""
     if table not in HUB_TABLES:
         return jsonify({"error": "Table non autorisee : " + str(table)}), 403
     url, key = _hub_sb()
@@ -1341,14 +1175,10 @@ def hub_delete(table, rec_id):
     except Exception as e:
         logger.error("Erreur hub_delete " + str(table) + ": " + str(e))
         return jsonify({"error": str(e)}), 500
- 
- 
+
+
 @app.route('/api/kpis', methods=['GET'])
 def hub_kpis():
-    """Renvoie les KPIs consolides du hub (vue v_kpis) :
-    leads actifs, leads du mois, mandats actifs, demandes en cours,
-    pipeline, commissions YTD, taux de conversion.
-    """
     url, key = _hub_sb()
     if not url:
         return jsonify({"error": "Supabase non configure"}), 500
@@ -1362,5 +1192,7 @@ def hub_kpis():
     except Exception as e:
         logger.error("Erreur hub_kpis: " + str(e))
         return jsonify({"error": str(e)}), 500
+
+
 if __name__ == '__main__':
     app.run(debug=False, host='0.0.0.0', port=5000)
